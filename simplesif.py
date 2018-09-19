@@ -216,11 +216,12 @@ class AudioVisualGeneratorFrozen(nn.Module):
 
         # from sentence embedding, generate mean and variance of
         # audio and visual features
+        # since variance is positive, we exponentiate.
         audio_mu = self.embed2audio_mu(to_gen)
-        audio_sigma = self.embed2audio_sigma(to_gen)
+        audio_sigma = self.embed2audio_sigma(to_gen).exp()
 
         visual_mu = self.embed2visual_mu(to_gen)
-        visual_sigma = self.embed2visual_sigma(to_gen)
+        visual_sigma = self.embed2visual_sigma(to_gen).exp()
 
         return (audio_mu, audio_sigma), (visual_mu, visual_sigma)
 
@@ -244,41 +245,6 @@ Also calculate log-probability of word embeddings, using model in Arora paper
 
 Then minimize negative log-probability using gradient descent.
 """
-def get_log_probability(embedding, audio, visual, data, a=1e-3):
-    # assume samples in sequences are i.i.d.
-    # calculate probabilities for audio and visual as if
-    # sampling from distribution
-    (audio_mu, audio_sigma) = audio
-    (visual_mu, visual_sigma) = visual
-
-    # calculate probabilities for text using Arora model
-    # given word weights p(w), a / (a + p(w)) * v(w) . embedding
-    word_log_prob = 0.
-    for i, sample in enumerate(data['text']):
-        for word_idx in sample:
-            weight = weights[word_idx]
-            word_embed = word_embeddings[word_idx]
-            word_log_prob += a / (a + weight) * word_embed.dot(embedding[i])
-
-    audio_log_prob = 0.
-    for i, sample in enumerate(data['covarep']):
-        audio_dist = MultivariateNormal(audio_mu[i], torch.diag(audio_sigma[i].pow(2)))
-        for timestep in sample:
-            audio_log_prob += audio_dist.log_prob(timestep)
-
-    visual_log_prob = 0.
-    for i, sample in enumerate(data['facet']):
-        visual_dist = MultivariateNormal(visual_mu[i], torch.diag(visual_sigma[i].pow(2)))
-        for timestep in sample:
-            visual_log_prob += visual_dist.log_prob(timestep)
-
-    word_log_prob = torch.tensor(word_log_prob, dtype=torch.float, device=device)
-    # print(audio_log_prob)
-    # print(visual_log_prob)
-    # print(word_log_prob)
-    total_log_prob = -(audio_log_prob + visual_log_prob + word_log_prob)
-    return total_log_prob
-
 def get_log_prob_matrix(embedding, audio, visual, data, a=1e-3):
     # assume samples in sequences are i.i.d.
     # calculate probabilities for audio and visual as if
@@ -286,37 +252,47 @@ def get_log_prob_matrix(embedding, audio, visual, data, a=1e-3):
     (audio_mu, audio_sigma) = audio
     (visual_mu, visual_sigma) = visual
 
+    # exponentiate the sigma
+
     # calculate probabilities for text using Arora model
     # given word weights p(w), a / (a + p(w)) * v(w) . embedding
+
+    # use softmax instead 
+    # log (alpha * p(w) + (1 - alpha) exp(dotprod) / Z)
+    # calc partition value Z - sum of exps of inner products of embedding with all words. Slow!
+
+    Z_s = embedding.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1)
+    alpha = 1. / (Z_s * a + 1.)
+
     word_log_prob = 0.
     for i, sample in enumerate(data['text']):
+        # sent embedding is 1D, word_weights is 1D, word_embeds is 2D
         sent_embedding = embedding[i]
         word_weights = weights[sample]
         word_embeds = word_embeddings[sample]
 
-        word_log_prob += (a / (a + word_weights) * word_embeds.matmul(sent_embedding)).sum()
-        
+        # word_log_prob += (a / (a + word_weights) * word_embeds.matmul(sent_embedding)).sum()
+
+        #for j in len(sample):
+        #    word_log_prob += torch.log(alpha[i] * word_weights[j] + (1 - alpha[i]) * torch.exp(word_embeds[j].dot(sent_embedding)) / Z_s[i])
+
+        word_log_prob += torch.log(alpha[i] * word_weights + (1 - alpha[i]) * word_embeds.matmul(sent_embedding).exp() / Z_s[i]).sum()
+    print(word_log_prob)
+
     audio_log_prob = 0.
+    if (audio_sigma == 0).sum() > 0:
+        print(audio_sigma)
     for i, sample in enumerate(data['covarep']):
-        audio_dist = MultivariateNormal(audio_mu[i], torch.diag(audio_sigma[i].pow(2)))
+        audio_dist = MultivariateNormal(audio_mu[i], torch.diag(audio_sigma[i]))
         audio_log_prob += audio_dist.log_prob(sample).sum()
 
     visual_log_prob = 0.
     for i, sample in enumerate(data['facet']):
-        visual_dist = MultivariateNormal(visual_mu[i], torch.diag(visual_sigma[i].pow(2)))
+        visual_dist = MultivariateNormal(visual_mu[i], torch.diag(visual_sigma[i]))
         visual_log_prob += visual_dist.log_prob(sample).sum()
 
     total_log_prob = -(audio_log_prob + visual_log_prob + word_log_prob)
     return total_log_prob
-
-def torchify(d):
-    # modifies in place
-    d['facet'] = torch.tensor(d['facet'], device=device, dtype=torch.float32)
-    d['covarep'] = torch.tensor(d['covarep'], device=device, dtype=torch.float32)
-    d['text'] = torch.tensor(d['text'], device=device, dtype=torch.long)
-    # d['text'] = torch.tensor(d['text'], device=device, dtype=torch.long).unsqueeze(-1)
-
-#torchify(valid)
 
 # # eval over valid before starting
 # print("Evaluating before training...")
@@ -328,23 +304,8 @@ def torchify(d):
 #     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
 #     print(log_prob)
 
-#torchify(train)
 print("Training...")
 N_EPOCHS = 10
-# curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
-# gen_model.init_embedding(curr_embedding)
-# optimizer = optim.SGD([gen_model.embedding], lr=0.01, momentum=0.9)
-# for i in range(N_EPOCHS):
-#     start_time = time.time()
-#     gen_model.zero_grad()
-#     epoch_loss = 0.
-#     # for vis, aud, text in zip(train['facet'], train['covarep'], train['text']):
-#     audio, visual = gen_model(torch.arange(curr_embedding.size()[0], dtype=torch.long))
-#     log_prob = get_log_probability(curr_embedding, audio, visual, train)
-#     log_prob.backward()
-#     optimizer.step()
-#     epoch_loss += log_prob
-#     print("epoch {}: {} ({}s)".format(i, epoch_loss, time.time() - start_time))
 
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 gen_model.init_embedding(curr_embedding)
@@ -353,14 +314,8 @@ for i in range(N_EPOCHS):
     start_time = time.time()
     gen_model.zero_grad()
     epoch_loss = 0.
-    #for j, (vis, aud, text) in enumerate(zip(train['facet'], train['covarep'], train['text'])):
     for j, text, aud, vis in dataloader:
         audio, visual = gen_model(j)
-        # log_prob = get_log_probability(curr_embedding[j], audio, visual,
-        #         {"text": text, "covarep": aud, "facet": vis})
-        # print(log_prob)
-        # print(get_log_prob_matrix(curr_embedding[j], audio, visual,
-        #         {"text": text, "covarep": aud, "facet": vis}))
         log_prob = get_log_prob_matrix(curr_embedding[j], audio, visual,
                 {"text": text, "covarep": aud, "facet": vis})
         log_prob.backward()
