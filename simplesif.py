@@ -79,21 +79,21 @@ for v in word2ix.values():
 print(sorted(c.values(), reverse=True)[:10])
 
 if os.path.isfile('word_weights.npy'):
-    weights = np.load('word_weights.npy', allow_pickle=False)
+    weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
 else:
     word_weights = get_word_weights('SIF/auxiliary_data/enwiki_vocab_min200.txt')
     print(type(word_weights))
     #print(word_weights.items()[:5])
 
     # create numpy matrix of weights using word2ix
-    weights = np.zeros((max(word2ix.values()) + 1, 1))
+    weights = np.zeros((max(word2ix.values()) + 1))
     unk = 0
     for word, ix in word2ix.items():
         if word.lower() not in word_weights.keys():
-            weights[ix, :] = 1.
+            weights[ix] = 1.
             unk += 1
         else:
-            weights[ix, :] = word_weights[word.lower()]
+            weights[ix] = word_weights[word.lower()]
     # for word, ix in word2ix.items():
     print("# of words with unknown weight", unk)
     print(weights[:5])
@@ -145,12 +145,12 @@ BATCH_SIZE = 16
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-for idxes, text, audio, visual in dataloader:
-    print(idxes)
-    print(text.size())
-    print(audio.size())
-    print(visual.size())
-    print(text.device)
+# for idxes, text, audio, visual in dataloader:
+#     print(idxes)
+#     print(text.size())
+#     print(audio.size())
+#     print(visual.size())
+#     print(text.device)
 
 """
 2. Initialize regression model to generate mean and variance of audio and
@@ -279,9 +279,35 @@ def get_log_probability(embedding, audio, visual, data, a=1e-3):
     total_log_prob = -(audio_log_prob + visual_log_prob + word_log_prob)
     return total_log_prob
 
-print(valid['covarep'].shape)
-print(valid['facet'].shape)
-print(valid['text'].shape)
+def get_log_prob_matrix(embedding, audio, visual, data, a=1e-3):
+    # assume samples in sequences are i.i.d.
+    # calculate probabilities for audio and visual as if
+    # sampling from distribution
+    (audio_mu, audio_sigma) = audio
+    (visual_mu, visual_sigma) = visual
+
+    # calculate probabilities for text using Arora model
+    # given word weights p(w), a / (a + p(w)) * v(w) . embedding
+    word_log_prob = 0.
+    for i, sample in enumerate(data['text']):
+        sent_embedding = embedding[i]
+        word_weights = weights[sample]
+        word_embeds = word_embeddings[sample]
+
+        word_log_prob += (a / (a + word_weights) * word_embeds.matmul(sent_embedding)).sum()
+        
+    audio_log_prob = 0.
+    for i, sample in enumerate(data['covarep']):
+        audio_dist = MultivariateNormal(audio_mu[i], torch.diag(audio_sigma[i].pow(2)))
+        audio_log_prob += audio_dist.log_prob(sample).sum()
+
+    visual_log_prob = 0.
+    for i, sample in enumerate(data['facet']):
+        visual_dist = MultivariateNormal(visual_mu[i], torch.diag(visual_sigma[i].pow(2)))
+        visual_log_prob += visual_dist.log_prob(sample).sum()
+
+    total_log_prob = -(audio_log_prob + visual_log_prob + word_log_prob)
+    return total_log_prob
 
 def torchify(d):
     # modifies in place
@@ -290,7 +316,7 @@ def torchify(d):
     d['text'] = torch.tensor(d['text'], device=device, dtype=torch.long)
     # d['text'] = torch.tensor(d['text'], device=device, dtype=torch.long).unsqueeze(-1)
 
-torchify(valid)
+#torchify(valid)
 
 # # eval over valid before starting
 # print("Evaluating before training...")
@@ -302,7 +328,7 @@ torchify(valid)
 #     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
 #     print(log_prob)
 
-torchify(train)
+#torchify(train)
 print("Training...")
 N_EPOCHS = 10
 # curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
@@ -327,10 +353,16 @@ for i in range(N_EPOCHS):
     start_time = time.time()
     gen_model.zero_grad()
     epoch_loss = 0.
-    for j, (vis, aud, text) in enumerate(zip(train['facet'], train['covarep'], train['text'])):
-        audio, visual = gen_model([j])
-        log_prob = get_log_probability(curr_embedding[[j]], audio, visual,
-                {"text": torch.unsqueeze(text, 0), "covarep": torch.unsqueeze(aud, 0), "facet": torch.unsqueeze(vis, 0)})
+    #for j, (vis, aud, text) in enumerate(zip(train['facet'], train['covarep'], train['text'])):
+    for j, text, aud, vis in dataloader:
+        audio, visual = gen_model(j)
+        # log_prob = get_log_probability(curr_embedding[j], audio, visual,
+        #         {"text": text, "covarep": aud, "facet": vis})
+        # print(log_prob)
+        # print(get_log_prob_matrix(curr_embedding[j], audio, visual,
+        #         {"text": text, "covarep": aud, "facet": vis}))
+        log_prob = get_log_prob_matrix(curr_embedding[j], audio, visual,
+                {"text": text, "covarep": aud, "facet": vis})
         log_prob.backward()
         optimizer.step()
         epoch_loss += log_prob
