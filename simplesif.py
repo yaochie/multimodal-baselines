@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 from torch.distributions.multivariate_normal import MultivariateNormal
 import numpy as np
 
@@ -115,6 +116,42 @@ train_embedding = SIF_embedding.SIF_embedding(word_embeddings, train['text'], tr
 valid_embedding = SIF_embedding.SIF_embedding(word_embeddings, valid['text'], valid_w, params)
 test_embedding = SIF_embedding.SIF_embedding(word_embeddings, test['text'], test_w, params)
 
+class MMData(Dataset):
+    def __init__(self, text, audio, visual, device):
+        super(Dataset, self).__init__()
+        
+        if not torch.is_tensor(text):
+            text = torch.tensor(text, device=device, dtype=torch.long)
+        if not torch.is_tensor(audio):
+            audio = torch.tensor(audio, device=device, dtype=torch.float32)
+        if not torch.is_tensor(visual):
+            visual = torch.tensor(visual, device=device, dtype=torch.float32)
+
+        assert text.size()[0] == audio.size()[0]
+        assert audio.size()[0] == visual.size()[0]
+
+        self.text = text
+        self.audio = audio
+        self.visual = visual
+        self.len = self.text.size()[0]
+
+    def __len__(self):
+        return self.len
+
+    def __getitem__(self, idx):
+        return idx, self.text[idx], self.audio[idx], self.visual[idx]
+
+BATCH_SIZE = 16
+dataset = MMData(train['text'], train['covarep'], train['facet'], device)
+dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+for idxes, text, audio, visual in dataloader:
+    print(idxes)
+    print(text.size())
+    print(audio.size())
+    print(visual.size())
+    print(text.device)
+
 """
 2. Initialize regression model to generate mean and variance of audio and
     visual features
@@ -172,16 +209,18 @@ class AudioVisualGeneratorFrozen(nn.Module):
         self.embedding.requires_grad = True
         self.embedding_dim = self.embedding.size()[-1]
 
-    def forward(self):
+    def forward(self, idxes):
         assert self.embedding is not None
+
+        to_gen = self.embedding[idxes]
 
         # from sentence embedding, generate mean and variance of
         # audio and visual features
-        audio_mu = self.embed2audio_mu(self.embedding)
-        audio_sigma = self.embed2audio_sigma(self.embedding)
+        audio_mu = self.embed2audio_mu(to_gen)
+        audio_sigma = self.embed2audio_sigma(to_gen)
 
-        visual_mu = self.embed2visual_mu(self.embedding)
-        visual_sigma = self.embed2visual_sigma(self.embedding)
+        visual_mu = self.embed2visual_mu(to_gen)
+        visual_sigma = self.embed2visual_sigma(to_gen)
 
         return (audio_mu, audio_sigma), (visual_mu, visual_sigma)
 
@@ -253,49 +292,65 @@ def torchify(d):
 
 torchify(valid)
 
-# eval over valid before starting
-print("Evaluating before training...")
-with torch.no_grad():
-    initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
-    gen_model.init_embedding(initial_embedding)
-    audio, visual = gen_model()
-
-    log_prob = get_log_probability(initial_embedding, audio, visual, valid)
-    print(log_prob)
+# # eval over valid before starting
+# print("Evaluating before training...")
+# with torch.no_grad():
+#     initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
+#     gen_model.init_embedding(initial_embedding)
+#     audio, visual = gen_model()
+# 
+#     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
+#     print(log_prob)
 
 torchify(train)
 print("Training...")
+N_EPOCHS = 10
+# curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+# gen_model.init_embedding(curr_embedding)
+# optimizer = optim.SGD([gen_model.embedding], lr=0.01, momentum=0.9)
+# for i in range(N_EPOCHS):
+#     start_time = time.time()
+#     gen_model.zero_grad()
+#     epoch_loss = 0.
+#     # for vis, aud, text in zip(train['facet'], train['covarep'], train['text']):
+#     audio, visual = gen_model(torch.arange(curr_embedding.size()[0], dtype=torch.long))
+#     log_prob = get_log_probability(curr_embedding, audio, visual, train)
+#     log_prob.backward()
+#     optimizer.step()
+#     epoch_loss += log_prob
+#     print("epoch {}: {} ({}s)".format(i, epoch_loss, time.time() - start_time))
+
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 gen_model.init_embedding(curr_embedding)
 optimizer = optim.SGD([gen_model.embedding], lr=0.01, momentum=0.9)
-N_EPOCHS = 10
 for i in range(N_EPOCHS):
     start_time = time.time()
     gen_model.zero_grad()
     epoch_loss = 0.
-    # for vis, aud, text in zip(train['facet'], train['covarep'], train['text']):
-    audio, visual = gen_model()
-    log_prob = get_log_probability(curr_embedding, audio, visual, train)
-    log_prob.backward()
-    optimizer.step()
-    epoch_loss += log_prob
+    for j, (vis, aud, text) in enumerate(zip(train['facet'], train['covarep'], train['text'])):
+        audio, visual = gen_model([j])
+        log_prob = get_log_probability(curr_embedding[[j]], audio, visual,
+                {"text": torch.unsqueeze(text, 0), "covarep": torch.unsqueeze(aud, 0), "facet": torch.unsqueeze(vis, 0)})
+        log_prob.backward()
+        optimizer.step()
+        epoch_loss += log_prob
     print("epoch {}: {} ({}s)".format(i, epoch_loss, time.time() - start_time))
 
-print("Evaluating after training...")
-with torch.no_grad():
-    initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
-    gen_model.init_embedding(initial_embedding)
-    audio, visual = gen_model()
-
-    log_prob = get_log_probability(initial_embedding, audio, visual, valid)
-    print(log_prob)
-
-print("Evaluating on test set...")
-torchify(test)
-with torch.no_grad():
-    initial_embedding = torch.tensor(test_embedding.copy(), device=device, dtype=torch.float32)
-    gen_model.init_embedding(initial_embedding)
-    audio, visual = gen_model()
-
-    log_prob = get_log_probability(initial_embedding, audio, visual, test)
-    print(log_prob)
+# print("Evaluating after training...")
+# with torch.no_grad():
+#     initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
+#     gen_model.init_embedding(initial_embedding)
+#     audio, visual = gen_model()
+# 
+#     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
+#     print(log_prob)
+# 
+# print("Evaluating on test set...")
+# torchify(test)
+# with torch.no_grad():
+#     initial_embedding = torch.tensor(test_embedding.copy(), device=device, dtype=torch.float32)
+#     gen_model.init_embedding(initial_embedding)
+#     audio, visual = gen_model()
+# 
+#     log_prob = get_log_probability(initial_embedding, audio, visual, test)
+#     print(log_prob)
