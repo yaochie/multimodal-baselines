@@ -212,7 +212,7 @@ EMBEDDING_DIM = 300
 AUDIO_DIM = 74
 VISUAL_DIM = 43
 
-gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen=False).to(device)
+gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=False).to(device)
 #optimizer = optim.SGD(gen_model.parameters(), lr=0.01, momentum=0.9)
 
 """
