@@ -158,29 +158,7 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 """
 
 class AudioVisualGenerator(nn.Module):
-    def __init__(self, embedding_dim, audio_dim, visual_dim):
-        super(AudioVisualGenerator, self).__init__()
-
-        self.embed2audio_mu = nn.Linear(embedding_dim, audio_dim)
-        self.embed2audio_sigma = nn.Linear(embedding_dim, audio_dim)
-
-        self.embed2visual_mu = nn.Linear(embedding_dim, visual_dim)
-        self.embed2visual_sigma = nn.Linear(embedding_dim, visual_dim)
-
-    def forward(self, inputs):
-        # from sentence embedding, generate mean and variance of
-        # audio and visual features
-        audio_mu = self.embed2audio_mu(inputs)
-        audio_sigma = self.embed2audio_sigma(inputs)
-
-        visual_mu = self.embed2visual_mu(inputs)
-        visual_sigma = self.embed2visual_sigma(inputs)
-
-        return (audio_mu, audio_sigma), (visual_mu, visual_sigma)
-
-# freeze weights
-class AudioVisualGeneratorFrozen(nn.Module):
-    def __init__(self, embedding_dim, audio_dim, visual_dim):
+    def __init__(self, embedding_dim, audio_dim, visual_dim, frozen_weights=True):
         super(AudioVisualGeneratorFrozen, self).__init__()
 
         self.embedding = None
@@ -192,6 +170,10 @@ class AudioVisualGeneratorFrozen(nn.Module):
         self.embed2visual_mu = nn.Linear(self.embedding_dim, visual_dim)
         self.embed2visual_sigma = nn.Linear(self.embedding_dim, visual_dim)
 
+        if frozen_weights:
+            self.freeze_weights()
+
+    def freeze_weights(self):
         # freeze weights
         for param in self.embed2audio_mu.parameters():
             param.requires_grad = False
@@ -230,7 +212,7 @@ EMBEDDING_DIM = 300
 AUDIO_DIM = 74
 VISUAL_DIM = 43
 
-gen_model = AudioVisualGeneratorFrozen(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM).to(device)
+gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen=False).to(device)
 #optimizer = optim.SGD(gen_model.parameters(), lr=0.01, momentum=0.9)
 
 """
