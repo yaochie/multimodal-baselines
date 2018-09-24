@@ -14,7 +14,7 @@ import sys
 sys.path.append('SIF/src')
 import SIF_embedding, params, data_io
 
-torch.cuda.set_device(3)
+torch.cuda.set_device(2)
 device = torch.device('cuda')
 
 """
@@ -66,17 +66,17 @@ def get_word_weights(word_freq_file, a=1e-3):
 
     return word_weights
 
-print(word_embeddings.shape)
-print(train['text'].shape)
-print(type(word2ix))
-print(len(word2ix))
+#print(word_embeddings.shape)
+#print(train['text'].shape)
+#print(type(word2ix))
+#print(len(word2ix))
 #print(word2ix.items()[:10])
-print(max(word2ix.values()))
-from collections import Counter
-c = Counter()
-for v in word2ix.values():
-    c[v] += 1
-print(sorted(c.values(), reverse=True)[:10])
+#print(max(word2ix.values()))
+#from collections import Counter
+#c = Counter()
+#for v in word2ix.values():
+#    c[v] += 1
+#print(sorted(c.values(), reverse=True)[:10])
 
 if os.path.isfile('word_weights.npy'):
     weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
@@ -141,16 +141,26 @@ class MMData(Dataset):
     def __getitem__(self, idx):
         return idx, self.text[idx], self.audio[idx], self.visual[idx]
 
+class SentimentData(Dataset):
+    def __init__(self, sentiment, device):
+        super(Dataset, self).__init__()
+
+        if not torch.is_tensor(sentiment):
+            sentiment = torch.tensor(sentiment, device=device, dtype=torch.float32)
+
+        self.sentiment = sentiment
+
+    def __len__(self):
+        return self.sentiment.size()[0]
+
+    def __getitem__(self, idx):
+        return idx, self.sentiment[idx]
+
 BATCH_SIZE = 16
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-# for idxes, text, audio, visual in dataloader:
-#     print(idxes)
-#     print(text.size())
-#     print(audio.size())
-#     print(visual.size())
-#     print(text.device)
+senti_dataset = SentimentData(train['label'], device)
+senti_dataloader = DataLoader(senti_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 """
 2. Initialize regression model to generate mean and variance of audio and
@@ -159,7 +169,7 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 class AudioVisualGenerator(nn.Module):
     def __init__(self, embedding_dim, audio_dim, visual_dim, frozen_weights=True):
-        super(AudioVisualGeneratorFrozen, self).__init__()
+        super(AudioVisualGenerator, self).__init__()
 
         self.embedding = None
         self.embedding_dim = embedding_dim
@@ -207,6 +217,18 @@ class AudioVisualGenerator(nn.Module):
 
         return (audio_mu, audio_sigma), (visual_mu, visual_sigma)
 
+class SentimentModel(nn.Module):
+    def __init__(self, embedding_dim, hidden_dim):
+        super(SentimentModel, self).__init__()
+
+        self.hidden1 = nn.Linear(embedding_dim, hidden_dim)
+        self.out = nn.Linear(hidden_dim, 1)
+
+    def forward(self, inputs):
+        x = F.relu(self.hidden1(inputs))
+        x = F.tanh(self.out(x)) * 3
+        # sentiment is [-3, 3] range
+        return x.squeeze()
 
 EMBEDDING_DIM = 300
 AUDIO_DIM = 74
@@ -291,7 +313,7 @@ N_EPOCHS = 10
 
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 gen_model.init_embedding(curr_embedding)
-optimizer = optim.SGD([gen_model.embedding], lr=0.01, momentum=0.9)
+optimizer = optim.SGD([gen_model.embedding], lr=0.0001, momentum=0.9)
 for i in range(N_EPOCHS):
     start_time = time.time()
     gen_model.zero_grad()
@@ -300,6 +322,7 @@ for i in range(N_EPOCHS):
         audio, visual = gen_model(j)
         log_prob = get_log_prob_matrix(curr_embedding[j], audio, visual,
                 {"text": text, "covarep": aud, "facet": vis})
+        print(log_prob)
         log_prob.backward()
         optimizer.step()
         epoch_loss += log_prob
@@ -323,3 +346,32 @@ for i in range(N_EPOCHS):
 # 
 #     log_prob = get_log_probability(initial_embedding, audio, visual, test)
 #     print(log_prob)
+
+# sentiment analysis
+senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
+senti_optimizer = optim.SGD(senti_model.parameters(), lr=0.01, momentum=0.9)
+loss_function = nn.L1Loss()
+
+print("Initial sentiment predictions")
+with torch.no_grad():
+    for j, senti in senti_dataloader:
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+
+print("Training sentiment model on learned embeddings...")
+N_EPOCHS = 20
+
+for i in range(N_EPOCHS):
+    senti_model.zero_grad()
+    for j, senti in senti_dataloader:
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+        loss.backward()
+        senti_optimizer.step()
+
+print("Sentiment predictions after training")
+with torch.no_grad():
+    for j, senti in senti_dataloader:
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+
