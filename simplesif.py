@@ -38,49 +38,52 @@ TR_PROPORTION = 2.0/3
 # number of principal components to remove
 RMPC = 1
 
-word2ix = loader.load_word2ix()
-# load glove 300d word embeddings
-word_embeddings = loader.load_word_embedding()
-train, valid, test = loader.load_word_level_features(MAX_SEGMENT_LEN, TR_PROPORTION)
+def load_data(max_len, tr_proportion):
+    word2ix = loader.load_word2ix()
 
-# if os.path.isfile('train.pkl'):
-#     train = pickle.load(open('train.pkl', 'rb'))
-#     valid = pickle.load(open('valid.pkl', 'rb'))
-#     test = pickle.load(open('test.pkl', 'rb'))
-# else:
-#     pickle.dump(train, 
+    # load glove 300d word embeddings
+    word_embeddings = loader.load_word_embedding()
+    
+    # TODO: save train, valid, test in file so that don't have to
+    # regenerate each time
+    train, valid, test = loader.load_word_level_features(max_len, tr_proportion)
 
-# normalize audio and visual features to [-1, 1]
-audio_min = train['covarep'].min((0, 1))
-audio_max = train['covarep'].max((0, 1))
-print(audio_max - audio_min)
-audio_diff = audio_max - audio_min
-audio_nonzeros = (audio_diff == 0).nonzero()[0]
-print(audio_nonzeros)
-audio_nonzeros = audio_diff.nonzero()[0]
-print(train['covarep'].shape)
-print(train['covarep'][:, :, audio_nonzeros].shape)
+    return word2ix, word_embeddings, (train, valid, test)
 
-train['covarep'] = train['covarep'][:, :, audio_nonzeros]
+word2ix, word_embeddings, data = load_data(MAX_SEGMENT_LEN, TR_PROPORTION)
+train, valid, test = data
 
-audio_min = train['covarep'].min((0, 1))
-audio_max = train['covarep'].max((0, 1))
-audio_diff = audio_max - audio_min
+def normalize_data(train):
+    """
+    normalize audio and visual features to [-1, 1].
+    Also remove any features that are always the same value.
+    """
+    # normalize audio and visual features to [-1, 1]
+    audio_min = train['covarep'].min((0, 1))
+    audio_max = train['covarep'].max((0, 1))
+    print(audio_max - audio_min)
+    audio_diff = audio_max - audio_min
+    audio_nonzeros = (audio_diff == 0).nonzero()[0]
+    print(audio_nonzeros)
+    audio_nonzeros = audio_diff.nonzero()[0]
+    print(train['covarep'].shape)
+    print(train['covarep'][:, :, audio_nonzeros].shape)
 
-vis_min = train['facet'].min((0, 1))
-vis_max = train['facet'].max((0, 1))
+    train['covarep'] = train['covarep'][:, :, audio_nonzeros]
 
-# print(train['covarep'].shape)
-# train['covarep'][:, :, audio_nonzeros] = (train['covarep'][:, :, audio_nonzeros] + audio_min[audio_nonzeros]) * 2. / audio_diff[audio_nonzeros] - 1.
-# print(train['covarep'].shape)
-train['covarep'] = (train['covarep'] + audio_min) * 2. / (audio_max - audio_min) - 1.
-train['facet'] = (train['facet'] + vis_min) * 2. / (vis_max - vis_min) - 1.
+    audio_min = train['covarep'].min((0, 1))
+    audio_max = train['covarep'].max((0, 1))
+    audio_diff = audio_max - audio_min
 
+    vis_min = train['facet'].min((0, 1))
+    vis_max = train['facet'].max((0, 1))
 
-def get_prefix(d, n):
-    return {k: v[:n] for k, v in d.items()}
+    train['covarep'] = (train['covarep'] + audio_min) * 2. / (audio_max - audio_min) - 1.
+    train['facet'] = (train['facet'] + vis_min) * 2. / (vis_max - vis_min) - 1.
 
-#train = get_prefix(train, 32)
+    return train
+
+train = normalize_data(train)
 
 """
 1. Initialize sentence embedding using the SIF algorithm over training data
@@ -107,18 +110,6 @@ def get_word_weights(word_freq_file, a=1e-3):
         word_weights[key] = a / (a + value / N)
 
     return word_weights
-
-#print(word_embeddings.shape)
-#print(train['text'].shape)
-#print(type(word2ix))
-#print(len(word2ix))
-#print(word2ix.items()[:10])
-#print(max(word2ix.values()))
-#from collections import Counter
-#c = Counter()
-#for v in word2ix.values():
-#    c[v] += 1
-#print(sorted(c.values(), reverse=True)[:10])
 
 if os.path.isfile('word_weights.npy'):
     weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
@@ -300,6 +291,27 @@ Also calculate log-probability of word embeddings, using model in Arora paper
 
 Then minimize negative log-probability using gradient descent.
 """
+def get_normal_log_prob(mu, sigma, values):
+    """
+    Arguments:
+        mu: a (batch_size, 1, n_features) tensor of the mean of each feature
+        sigma: (batch_size, 1, n_features) tensor of the stdev of each feature
+        values: (batch_size, seq_len, n_features) tensor of the values of the feature
+
+    Returns:
+        A (batch_size,) tensor of the sum of the log probabilities of each sample,
+        assuming each feature is independent and normally-distributed according to
+        the given mu and sigma.
+    """
+    sig_sq = sigma.pow(2)
+    term1 = torch.log(1. / torch.sqrt(2. * np.pi * sig_sq))
+
+    diff = values - mu
+    term2 = diff.pow(2) / (2. * sig_sq)
+
+    log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
+    return log_prob
+
 def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     """
     Return the log probability for the batch data given the
@@ -335,29 +347,6 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
     alpha = 1. / (Z_s * a + 1.)
 
-    # # use angular distance instead: dot products could be too big, so taking exponents
-    # # is too big to fit in a float.
-    # dot_prods = latents.matmul(word_embeddings.transpose(0, 1))
-    # print(word_embeddings.size())
-    # print(latents.size())
-    # print(dot_prods.size())
-
-    # latents_norm = latents.norm(dim=-1, keepdim=True)
-    # embeddings_norm = word_embeddings.norm(dim=-1, keepdim=True)
-    # print(latents_norm.size())
-    # print(embeddings_norm.size())
-
-    # print(dot_prods[:2, :2])
-    # print(latents_norm[:2])
-    # print(embeddings_norm[:2])
-
-    # angular_dist = dot_prods / latents_norm
-    # angular_dist = angular_dist / embeddings_norm.transpose(0, 1)
-
-    # print(angular_dist[:2, :2])
-    # print(angular_dist.size())
-    # sys.exit()
-
     word_weights = weights[data['text']]
     sent_embeddings = word_embeddings[data['text']]
 
@@ -377,25 +366,10 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     # audio_mu: (batch, n_features)
     # audio_sigma: (batch, n_features)
     # independent normals, so just calculate log prob directly
-
-    # audio log prob
-    sig_sq = audio_sigma.pow(2).unsqueeze(1)
-    term1 = torch.log(1. / torch.sqrt(2. * np.pi * sig_sq)) 
-    
-    diff = data['covarep'] - audio_mu.unsqueeze(1)
-    term2 = diff.pow(2) / (2. * sig_sq)
-
-    audio_log_prob = term1 - term2
-    audio_log_prob = audio_log_prob.squeeze().sum(-1).sum(-1)
-
-    # visual log prob
-    vis_sig_sq = visual_sigma.pow(2).unsqueeze(1)
-    term1 = torch.log(1. / torch.sqrt(2. * np.pi * vis_sig_sq))
-
-    diff = data['facet'] - visual_mu.unsqueeze(1)
-    term2 = diff.pow(2) / (2. * vis_sig_sq)
-
-    visual_log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
+    audio_log_prob = get_normal_log_prob(audio_mu.unsqueeze(1),
+                audio_sigma.unsqueeze(1), data['covarep'])
+    visual_log_prob = get_normal_log_prob(visual_mu.unsqueeze(1),
+                visual_sigma.unsqueeze(1), data['facet'])
 
     bad = False
     if audio_log_prob.min().abs() == np.inf:
@@ -418,6 +392,8 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     # final output: one value per datapoint
     total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
     return total_log_prob
+
+valid_niter = 10
 
 # sentiment analysis
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
@@ -453,7 +429,8 @@ for i in range(N_EPOCHS):
         loss.backward()
         senti_optimizer.step()
         iters += 1
-    print("Epoch {}: {}".format(i, epoch_loss / iters))
+    if i % valid_niter == 0:
+        print("Epoch {}: {}".format(i, epoch_loss / iters))
 
 print("Sentiment predictions after training")
 total_loss = 0
@@ -542,12 +519,16 @@ for i in range(N_EPOCHS):
     for j, senti in senti_dataloader:
         senti_model.zero_grad()
         senti_predict = senti_model(curr_embedding[j])
+        print(senti_predict.size())
+        print(senti.size())
+        sys.exit()
         loss = loss_function(senti_predict, senti)
         epoch_loss += loss
         loss.backward()
         senti_optimizer.step()
         iters += 1
-    print("Epoch {}: {}".format(i, epoch_loss / iters))
+    if i % valid_niter == 0:
+        print("Epoch {}: {}".format(i, epoch_loss / iters))
 
 print("Sentiment predictions after training")
 total_loss = 0
