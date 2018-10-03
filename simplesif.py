@@ -177,9 +177,6 @@ class MMData(Dataset):
         self.visual = visual
         self.len = self.text.size()[0]
 
-        print(type(self.audio))
-        print(type(self.visual))
-
     def __len__(self):
         return self.len
 
@@ -378,16 +375,6 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 #gen_model = nn.DataParallel(gen_model)
 
-# # eval over valid before starting
-# print("Evaluating before training...")
-# with torch.no_grad():
-#     initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
-#     gen_model.init_embedding(initial_embedding)
-#     audio, visual = gen_model()
-# 
-#     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
-#     print(log_prob)
-
 print("Training...")
 N_EPOCHS = 100
 
@@ -395,7 +382,7 @@ curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch
 print("Initial word embeddings:", curr_embedding.size())
 
 gen_model.init_embedding(curr_embedding)
-optimizer = optim.SGD([gen_model.embedding], lr=1e-4)
+optimizer = optim.SGD([gen_model.embedding], lr=1e-3)
 # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
 for i in range(N_EPOCHS):
@@ -416,7 +403,7 @@ for i in range(N_EPOCHS):
         log_prob = -get_log_prob_matrix(curr_embedding[j], audio, visual,
                 {"text": text, "covarep": aud, "facet": vis})
 
-        print(log_prob.max())
+        #print(log_prob.max())
 
         avg_log_prob = log_prob.mean()
         avg_log_prob.backward()
@@ -427,52 +414,39 @@ for i in range(N_EPOCHS):
     # scheduler.step()
     print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 
-sys.exit()
-
-# print("Evaluating after training...")
-# with torch.no_grad():
-#     initial_embedding = torch.tensor(valid_embedding.copy(), device=device, dtype=torch.float32)
-#     gen_model.init_embedding(initial_embedding)
-#     audio, visual = gen_model()
-# 
-#     log_prob = get_log_probability(initial_embedding, audio, visual, valid)
-#     print(log_prob)
-# 
-# print("Evaluating on test set...")
-# torchify(test)
-# with torch.no_grad():
-#     initial_embedding = torch.tensor(test_embedding.copy(), device=device, dtype=torch.float32)
-#     gen_model.init_embedding(initial_embedding)
-#     audio, visual = gen_model()
-# 
-#     log_prob = get_log_probability(initial_embedding, audio, visual, test)
-#     print(log_prob)
-
 # sentiment analysis
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
-senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-7, momentum=0.9)
+senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-4)
 loss_function = nn.L1Loss()
 
 print("Initial sentiment predictions")
+total_loss = 0
 with torch.no_grad():
     for j, senti in senti_dataloader:
         senti_predict = senti_model(curr_embedding[j])
         loss = loss_function(senti_predict, senti)
+        total_loss += loss
+print(total_loss)
 
 print("Training sentiment model on learned embeddings...")
 N_EPOCHS = 20
 
 for i in range(N_EPOCHS):
+    epoch_loss = 0
     for j, senti in senti_dataloader:
         senti_model.zero_grad()
         senti_predict = senti_model(curr_embedding[j])
         loss = loss_function(senti_predict, senti)
+        epoch_loss += loss
         loss.backward()
         senti_optimizer.step()
+    print("Epoch {}: {}".format(i, epoch_loss))
 
 print("Sentiment predictions after training")
+total_loss = 0
 with torch.no_grad():
     for j, senti in senti_dataloader:
         senti_predict = senti_model(curr_embedding[j])
         loss = loss_function(senti_predict, senti)
-
+        total_loss += loss
+print(total_loss)
