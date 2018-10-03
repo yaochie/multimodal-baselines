@@ -149,6 +149,11 @@ test_w = data_io.seq2weight(test['text'], np.ones(test['text'].shape), weights)
 
 weights = torch.tensor(weights, device=device, dtype=torch.float32)
 word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
+print(word_embeddings.norm(dim=-1).max())
+print(word_embeddings[:2, :2])
+print(word_embeddings.size())
+word_embeddings = F.normalize(word_embeddings)
+print(word_embeddings.norm(dim=-1).max())
 
 #print(word_weights.keys()[:10])
 params = params.params()
@@ -245,10 +250,11 @@ class AudioVisualGenerator(nn.Module):
         self.embedding.requires_grad = True
         self.embedding_dim = self.embedding.size()[-1]
 
-    def forward(self, idxes):
-        assert self.embedding is not None
+    def forward(self, embeddings):
+        #assert self.embedding is not None
 
-        to_gen = self.embedding[idxes]
+        #to_gen = self.embedding[idxes]
+        to_gen = embeddings
 
         # from sentence embedding, generate mean and variance of
         # audio and visual features
@@ -323,10 +329,34 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     # log (alpha * p(w) + (1 - alpha) exp(dotprod) / Z)
     # calc partition value Z - sum of exps of inner products of embedding with all words. Slow!
 
-    Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
-    alpha = 1 / (Z_s * a + 1)
+    # print(latents.norm(dim=-1).max())
+    # latents = F.normalize(latents)
 
-    word_log_prob = 0
+    Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
+    alpha = 1. / (Z_s * a + 1.)
+
+    # # use angular distance instead: dot products could be too big, so taking exponents
+    # # is too big to fit in a float.
+    # dot_prods = latents.matmul(word_embeddings.transpose(0, 1))
+    # print(word_embeddings.size())
+    # print(latents.size())
+    # print(dot_prods.size())
+
+    # latents_norm = latents.norm(dim=-1, keepdim=True)
+    # embeddings_norm = word_embeddings.norm(dim=-1, keepdim=True)
+    # print(latents_norm.size())
+    # print(embeddings_norm.size())
+
+    # print(dot_prods[:2, :2])
+    # print(latents_norm[:2])
+    # print(embeddings_norm[:2])
+
+    # angular_dist = dot_prods / latents_norm
+    # angular_dist = angular_dist / embeddings_norm.transpose(0, 1)
+
+    # print(angular_dist[:2, :2])
+    # print(angular_dist.size())
+    # sys.exit()
 
     word_weights = weights[data['text']]
     sent_embeddings = word_embeddings[data['text']]
@@ -334,7 +364,7 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     unigram_prob = alpha * word_weights
 
     dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
-    context_prob = (1 - alpha) * dot_prod.exp() / Z_s
+    context_prob = (1. - alpha) * dot_prod.exp() / Z_s
 
     log_probs = torch.log(unigram_prob + context_prob)
     word_log_prob = log_probs.sum(dim=-1)
@@ -350,27 +380,91 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
 
     # audio log prob
     sig_sq = audio_sigma.pow(2).unsqueeze(1)
-    term1 = torch.log(1 / torch.sqrt(2 * np.pi * sig_sq)) 
+    term1 = torch.log(1. / torch.sqrt(2. * np.pi * sig_sq)) 
     
     diff = data['covarep'] - audio_mu.unsqueeze(1)
-    term2 = diff.pow(2) / (2 * sig_sq)
+    term2 = diff.pow(2) / (2. * sig_sq)
 
     audio_log_prob = term1 - term2
     audio_log_prob = audio_log_prob.squeeze().sum(-1).sum(-1)
 
     # visual log prob
     vis_sig_sq = visual_sigma.pow(2).unsqueeze(1)
-    term1 = torch.log(1 / torch.sqrt(2 * np.pi * vis_sig_sq))
+    term1 = torch.log(1. / torch.sqrt(2. * np.pi * vis_sig_sq))
 
     diff = data['facet'] - visual_mu.unsqueeze(1)
-    term2 = diff.pow(2) / (2 * vis_sig_sq)
+    term2 = diff.pow(2) / (2. * vis_sig_sq)
 
     visual_log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
+
+    bad = False
+    if audio_log_prob.min().abs() == np.inf:
+        print('aud inf')
+        bad = True
+    if visual_log_prob.min().abs() == np.inf:
+        print('vis inf')
+        bad = True
+    if word_log_prob.min().abs() == np.inf:
+        print('word inf')
+        print(latents.size())
+        print(latents.matmul(word_embeddings.transpose(0, 1)).max())
+        print(latents.matmul(word_embeddings.transpose(0, 1)).exp().max())
+        print(latents)
+        print(Z_s)
+        bad = True
+    if bad:
+        sys.exit()
 
     # final output: one value per datapoint
     total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
     return total_log_prob
 
+# sentiment analysis
+curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+
+senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
+senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
+loss_function = nn.L1Loss()
+
+print("Initial sentiment predictions, before optimizing audio and visual")
+total_loss = 0
+with torch.no_grad():
+    iters = 0
+    for j, senti in senti_dataloader:
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+        total_loss += loss
+        iters += 1
+print(total_loss / iters)
+
+print("Training sentiment model on sentence embeddings...")
+N_EPOCHS = 100
+
+#curr_embedding = curr_embedding.detach()
+#curr_embedding.requires_grad = False
+for i in range(N_EPOCHS):
+    epoch_loss = 0
+    iters = 0
+    for j, senti in senti_dataloader:
+        senti_model.zero_grad()
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+        epoch_loss += loss
+        loss.backward()
+        senti_optimizer.step()
+        iters += 1
+    print("Epoch {}: {}".format(i, epoch_loss / iters))
+
+print("Sentiment predictions after training")
+total_loss = 0
+with torch.no_grad():
+    iters = 0
+    for j, senti in senti_dataloader:
+        senti_predict = senti_model(curr_embedding[j])
+        loss = loss_function(senti_predict, senti)
+        total_loss += loss
+        iters += 1
+print(total_loss / iters)
 
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 #gen_model = nn.DataParallel(gen_model)
@@ -378,22 +472,24 @@ gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_we
 print("Training...")
 N_EPOCHS = 100
 
-curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+curr_embedding.requires_grad = True
 print("Initial word embeddings:", curr_embedding.size())
 
-gen_model.init_embedding(curr_embedding)
-optimizer = optim.SGD([gen_model.embedding], lr=1e-3)
+# gen_model.init_embedding(curr_embedding)
+optimizer = optim.SGD([curr_embedding], lr=1e-2)
 # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
+valid_niter = 10
 for i in range(N_EPOCHS):
     start_time = time.time()
     epoch_loss = 0.
     iters = 0
+    #curr_embedding = F.normalize(curr_embedding)
     for j, text, aud, vis in dataloader:
         iters += 1
-        gen_model.zero_grad()
+        optimizer.zero_grad()
         # print(curr_embedding[:10])
-        audio, visual = gen_model(j)
+        audio, visual = gen_model(curr_embedding[j])
 
         if audio[1].min().abs() < 1e-7:
             print("boo!")
@@ -406,33 +502,43 @@ for i in range(N_EPOCHS):
         #print(log_prob.max())
 
         avg_log_prob = log_prob.mean()
-        avg_log_prob.backward()
+        avg_log_prob.backward(retain_graph=True)
+
+        # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
 
         # log_prob.backward()
         optimizer.step()
         epoch_loss += avg_log_prob
     # scheduler.step()
-    print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+    if i % valid_niter == 0:
+        print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 
-# sentiment analysis
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
-senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-4)
+senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
 loss_function = nn.L1Loss()
+
+print(curr_embedding.requires_grad)
+curr_embedding.requires_grad = False
 
 print("Initial sentiment predictions")
 total_loss = 0
 with torch.no_grad():
+    iters = 0
     for j, senti in senti_dataloader:
         senti_predict = senti_model(curr_embedding[j])
         loss = loss_function(senti_predict, senti)
         total_loss += loss
-print(total_loss)
+        iters += 1
+print(total_loss / iters)
 
 print("Training sentiment model on learned embeddings...")
-N_EPOCHS = 20
+N_EPOCHS = 100
 
+#curr_embedding = curr_embedding.detach()
+#curr_embedding.requires_grad = False
 for i in range(N_EPOCHS):
     epoch_loss = 0
+    iters = 0
     for j, senti in senti_dataloader:
         senti_model.zero_grad()
         senti_predict = senti_model(curr_embedding[j])
@@ -440,13 +546,16 @@ for i in range(N_EPOCHS):
         epoch_loss += loss
         loss.backward()
         senti_optimizer.step()
-    print("Epoch {}: {}".format(i, epoch_loss))
+        iters += 1
+    print("Epoch {}: {}".format(i, epoch_loss / iters))
 
 print("Sentiment predictions after training")
 total_loss = 0
 with torch.no_grad():
+    iters = 0
     for j, senti in senti_dataloader:
         senti_predict = senti_model(curr_embedding[j])
         loss = loss_function(senti_predict, senti)
         total_loss += loss
-print(total_loss)
+        iters += 1
+print(total_loss / iters)
