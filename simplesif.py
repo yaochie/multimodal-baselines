@@ -329,7 +329,7 @@ def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
 
     cosine_sims = coss(latents.unsqueeze(1), word_embeddings.unsqueeze(0))
     angular_dists = cosine_sims.acos()
-    Z_s = ((1. - angular_dists) / np.pi).sum(-1, keepdim=True)
+    Z_s = (1. - angular_dists / np.pi).sum(-1, keepdim=True)
     #Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
     alpha = 1. / (Z_s * a + 1.)
 
@@ -338,7 +338,7 @@ def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
 
     unigram_prob = alpha * word_weights
 
-    score = (1. - coss(sent_embeddings, latents.unsqueeze(1)).acos()) / np.pi
+    score = 1. - (coss(sent_embeddings, latents.unsqueeze(1)).acos() / np.pi)
     context_prob = (1. - alpha) * score / Z_s
     #dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
     #context_prob = (1. - alpha) * dot_prod.exp() / Z_s
@@ -437,8 +437,6 @@ valid_niter = 10
 # sentiment analysis
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
-senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
-
 def loss2(predictions, y_test):
     predictions = predictions.cpu().numpy()
     y_test = y_test.cpu().numpy()
@@ -505,22 +503,29 @@ def train_sentiment(data, model, latents, n_epochs, valid_niter=10):
         if i % valid_niter == 0:
             print("Epoch {}: {}".format(i, epoch_loss / n_samples))
 
-print("Initial sentiment predictions, before optimizing audio and visual")
-eval_sentiment(senti_dataloader, senti_model, curr_embedding)
+def train_sentiment_for_latents(latents, sentiment_data, n_epochs):
+    embedding_dim = latents.size()[-1]
+    senti_model = SentimentModel(embedding_dim, 100).to(device)
 
-print("Training sentiment model on sentence embeddings...")
+    print("Initial sentiment predictions")
+    eval_sentiment(sentiment_data, senti_model, latents)
+
+    print("Training sentiment model on sentence embeddings...")
+    N_EPOCHS = 100
+    train_sentiment(sentiment_data, senti_model, latents, n_epochs)
+
+    print("Sentiment predictions after training")
+    eval_sentiment(sentiment_data, senti_model, latents)
+    print("-----------------------------")
+
 N_EPOCHS = 100
-train_sentiment(senti_dataloader, senti_model, curr_embedding, N_EPOCHS)
-
-print("Sentiment predictions after training")
-eval_sentiment(senti_dataloader, senti_model, curr_embedding)
-print("-----------------------------")
+print("Initial sentiment predictions, before optimizing audio and visual")
+train_sentiment_for_latents(curr_embedding, senti_dataloader, N_EPOCHS)
 
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 #gen_model = nn.DataParallel(gen_model)
 
 print("Training...")
-N_EPOCHS = 100
 
 curr_embedding.requires_grad = True
 print("Initial word embeddings:", curr_embedding.size())
@@ -562,19 +567,6 @@ for i in range(N_EPOCHS):
     if i % valid_niter == 0:
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 
-print("-----------------------------")
-senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
-senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
+print("Initial sentiment predictions, AFTER optimizing audio and visual")
+train_sentiment_for_latents(curr_embedding, senti_dataloader, N_EPOCHS)
 
-curr_embedding.requires_grad = False
-
-print("Initial sentiment predictions")
-eval_sentiment(senti_dataloader, senti_model, curr_embedding)
-
-print("Training sentiment model on learned embeddings...")
-N_EPOCHS = 100
-train_sentiment(senti_dataloader, senti_model, curr_embedding, N_EPOCHS)
-
-senti_model.zero_grad()
-print("Sentiment predictions after training")
-eval_sentiment(senti_dataloader, senti_model, curr_embedding)
