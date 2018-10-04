@@ -198,6 +198,7 @@ BATCH_SIZE = 32
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 senti_dataset = SentimentData(train['label'], device)
+print(len(senti_dataset))
 senti_dataloader = DataLoader(senti_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 epsilon = torch.tensor(1e-6, device=device)
@@ -399,49 +400,47 @@ valid_niter = 10
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
-senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
-loss_function = nn.L1Loss()
+
+def eval_sentiment(data, model, latents):
+    n_samples = len(data.dataset)
+    loss_function = nn.L1Loss(reduce=False)
+    total_loss = 0
+    with torch.no_grad():
+        for j, senti in data:
+            senti_predict = model(latents[j])
+            loss = loss_function(senti_predict, senti)
+            total_loss += loss.sum()
+    print("MAE: {}".format(total_loss / n_samples))
+
+def train_sentiment(data, model, latents, n_epochs, valid_niter=10):
+    n_samples = len(data.dataset)
+    loss_function = nn.L1Loss(reduce=False)
+    optimizer = optim.SGD(model.parameters(), lr=1e-2)
+
+    for i in range(n_epochs):
+        epoch_loss = 0
+        for j, senti in data:
+            model.zero_grad()
+            senti_predict = model(latents[j])
+            
+            loss = loss_function(senti_predict, senti)
+            epoch_loss += loss.sum()
+
+            loss.mean().backward()
+            optimizer.step()
+
+        if i % valid_niter == 0:
+            print("Epoch {}: {}".format(i, epoch_loss / n_samples))
 
 print("Initial sentiment predictions, before optimizing audio and visual")
-total_loss = 0
-with torch.no_grad():
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_predict = senti_model(curr_embedding[j])
-        loss = loss_function(senti_predict, senti)
-        total_loss += loss
-        iters += 1
-print(total_loss / iters)
+eval_sentiment(senti_dataloader, senti_model, curr_embedding)
 
 print("Training sentiment model on sentence embeddings...")
 N_EPOCHS = 100
-
-#curr_embedding = curr_embedding.detach()
-#curr_embedding.requires_grad = False
-for i in range(N_EPOCHS):
-    epoch_loss = 0
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_model.zero_grad()
-        senti_predict = senti_model(curr_embedding[j])
-        loss = loss_function(senti_predict, senti)
-        epoch_loss += loss
-        loss.backward()
-        senti_optimizer.step()
-        iters += 1
-    if i % valid_niter == 0:
-        print("Epoch {}: {}".format(i, epoch_loss / iters))
+train_sentiment(senti_dataloader, senti_model, curr_embedding, N_EPOCHS)
 
 print("Sentiment predictions after training")
-total_loss = 0
-with torch.no_grad():
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_predict = senti_model(curr_embedding[j])
-        loss = loss_function(senti_predict, senti)
-        total_loss += loss
-        iters += 1
-print(total_loss / iters)
+eval_sentiment(senti_dataloader, senti_model, curr_embedding)
 
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 #gen_model = nn.DataParallel(gen_model)
@@ -456,9 +455,8 @@ print("Initial word embeddings:", curr_embedding.size())
 optimizer = optim.SGD([curr_embedding], lr=1e-2)
 # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
-valid_niter = 10
+start_time = time.time()
 for i in range(N_EPOCHS):
-    start_time = time.time()
     epoch_loss = 0.
     iters = 0
     #curr_embedding = F.normalize(curr_embedding)
@@ -492,51 +490,16 @@ for i in range(N_EPOCHS):
 
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
 senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
-loss_function = nn.L1Loss()
 
-print(curr_embedding.requires_grad)
 curr_embedding.requires_grad = False
 
 print("Initial sentiment predictions")
-total_loss = 0
-with torch.no_grad():
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_predict = senti_model(curr_embedding[j])
-        loss = loss_function(senti_predict, senti)
-        total_loss += loss
-        iters += 1
-print(total_loss / iters)
+eval_sentiment(senti_dataloader, senti_model, curr_embedding)
 
 print("Training sentiment model on learned embeddings...")
 N_EPOCHS = 100
+train_sentiment(senti_dataloader, senti_model, curr_embedding, N_EPOCHS)
 
-#curr_embedding = curr_embedding.detach()
-#curr_embedding.requires_grad = False
-for i in range(N_EPOCHS):
-    epoch_loss = 0
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_model.zero_grad()
-        senti_predict = senti_model(curr_embedding[j])
-        print(senti_predict.size())
-        print(senti.size())
-        sys.exit()
-        loss = loss_function(senti_predict, senti)
-        epoch_loss += loss
-        loss.backward()
-        senti_optimizer.step()
-        iters += 1
-    if i % valid_niter == 0:
-        print("Epoch {}: {}".format(i, epoch_loss / iters))
-
+senti_model.zero_grad()
 print("Sentiment predictions after training")
-total_loss = 0
-with torch.no_grad():
-    iters = 0
-    for j, senti in senti_dataloader:
-        senti_predict = senti_model(curr_embedding[j])
-        loss = loss_function(senti_predict, senti)
-        total_loss += loss
-        iters += 1
-print(total_loss / iters)
+eval_sentiment(senti_dataloader, senti_model, curr_embedding)
