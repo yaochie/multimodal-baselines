@@ -145,10 +145,12 @@ test_w = data_io.seq2weight(test['text'], np.ones(test['text'].shape), weights)
 
 weights = torch.tensor(weights, device=device, dtype=torch.float32)
 word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
+
+# normalize word embedding lengths
 print(word_embeddings.norm(dim=-1).max())
 print(word_embeddings[:2, :2])
 print(word_embeddings.size())
-word_embeddings = F.normalize(word_embeddings)
+# word_embeddings = F.normalize(word_embeddings)
 print(word_embeddings.norm(dim=-1).max())
 
 #print(word_weights.keys()[:10])
@@ -395,7 +397,8 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     audio_sigma = audio_sigma + epsilon
     visual_sigma = visual_sigma + epsilon
 
-    word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
+    # word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
+    word_log_prob = get_word_log_prob_angular(latents, weights, word_embeddings, data['text'], a)
 
     # assume samples in sequences are i.i.d.
     # calculate probabilities for audio and visual as if
@@ -431,11 +434,6 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     # final output: one value per datapoint
     total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
     return total_log_prob
-
-valid_niter = 10
-
-# sentiment analysis
-curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
 def loss2(predictions, y_test):
     predictions = predictions.cpu().numpy()
@@ -518,6 +516,11 @@ def train_sentiment_for_latents(latents, sentiment_data, n_epochs):
     eval_sentiment(sentiment_data, senti_model, latents)
     print("-----------------------------")
 
+valid_niter = 10
+
+# sentiment analysis
+curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+
 N_EPOCHS = 100
 print("Initial sentiment predictions, before optimizing audio and visual")
 train_sentiment_for_latents(curr_embedding, senti_dataloader, N_EPOCHS)
@@ -528,9 +531,7 @@ gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_we
 print("Training...")
 
 curr_embedding.requires_grad = True
-print("Initial word embeddings:", curr_embedding.size())
 
-# gen_model.init_embedding(curr_embedding)
 optimizer = optim.SGD([curr_embedding], lr=1e-2)
 # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
@@ -553,19 +554,17 @@ for i in range(N_EPOCHS):
         log_prob = -get_log_prob_matrix(curr_embedding[j], audio, visual,
                 {"text": text, "covarep": aud, "facet": vis})
 
-        #print(log_prob.max())
-
         avg_log_prob = log_prob.mean()
         avg_log_prob.backward(retain_graph=True)
 
         # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
 
-        # log_prob.backward()
         optimizer.step()
         epoch_loss += avg_log_prob
     # scheduler.step()
     if i % valid_niter == 0:
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+curr_embedding.requires_grad = False
 
 print("Initial sentiment predictions, AFTER optimizing audio and visual")
 train_sentiment_for_latents(curr_embedding, senti_dataloader, N_EPOCHS)
