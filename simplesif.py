@@ -10,6 +10,11 @@ from torch.utils.data import Dataset, DataLoader
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+from sklearn.metrics import classification_report
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, f1_score
+
 import numpy as np
 
 import data_loader as loader
@@ -268,7 +273,8 @@ class SentimentModel(nn.Module):
 
     def forward(self, inputs):
         x = F.relu(self.hidden1(inputs))
-        x = F.tanh(self.out(x)) * 3
+        x = self.out(x)
+        # x = F.tanh(self.out(x)) * 3
         # sentiment is [-3, 3] range
         return x.squeeze()
 
@@ -313,6 +319,62 @@ def get_normal_log_prob(mu, sigma, values):
     log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
     return log_prob
 
+def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
+    """
+    Calculate the log probability of the word data given the latents, using
+    the angular distance between the latent embedding and the word embeddings
+    of the sentence. Based on Ethayarajh's work.
+    """
+    coss = nn.CosineSimilarity(dim=-1)
+
+    cosine_sims = coss(latents.unsqueeze(1), word_embeddings.unsqueeze(0))
+    angular_dists = cosine_sims.acos()
+    Z_s = ((1. - angular_dists) / np.pi).sum(-1, keepdim=True)
+    #Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
+    alpha = 1. / (Z_s * a + 1.)
+
+    word_weights = weights[data]
+    sent_embeddings = word_embeddings[data]
+
+    unigram_prob = alpha * word_weights
+
+    score = (1. - coss(sent_embeddings, latents.unsqueeze(1)).acos()) / np.pi
+    context_prob = (1. - alpha) * score / Z_s
+    #dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
+    #context_prob = (1. - alpha) * dot_prod.exp() / Z_s
+
+    log_probs = torch.log(unigram_prob + context_prob)
+    word_log_prob = log_probs.sum(dim=-1)
+    return word_log_prob
+
+def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
+    """
+    Arora's original log probability formulation, based on dot product.
+    ** sensitive to vector norm!
+    exponentiate the sigma
+
+    calculate probabilities for text using Arora model
+    given word weights p(w), a / (a + p(w)) * v(w) . embedding
+
+    use softmax instead 
+    log (alpha * p(w) + (1 - alpha) exp(dotprod) / Z)
+    calc partition value Z - sum of exps of inner products of embedding with all words.
+    """
+    Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
+    alpha = 1. / (Z_s * a + 1.)
+
+    word_weights = weights[data]
+    sent_embeddings = word_embeddings[data]
+
+    unigram_prob = alpha * word_weights
+
+    dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
+    context_prob = (1. - alpha) * dot_prod.exp() / Z_s
+
+    log_probs = torch.log(unigram_prob + context_prob)
+    word_log_prob = log_probs.sum(dim=-1)
+    return word_log_prob
+
 def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     """
     Return the log probability for the batch data given the
@@ -333,31 +395,7 @@ def get_log_prob_matrix(latents, audio, visual, data, a=1e-3):
     audio_sigma = audio_sigma + epsilon
     visual_sigma = visual_sigma + epsilon
 
-    # exponentiate the sigma
-
-    # calculate probabilities for text using Arora model
-    # given word weights p(w), a / (a + p(w)) * v(w) . embedding
-
-    # use softmax instead 
-    # log (alpha * p(w) + (1 - alpha) exp(dotprod) / Z)
-    # calc partition value Z - sum of exps of inner products of embedding with all words. Slow!
-
-    # print(latents.norm(dim=-1).max())
-    # latents = F.normalize(latents)
-
-    Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
-    alpha = 1. / (Z_s * a + 1.)
-
-    word_weights = weights[data['text']]
-    sent_embeddings = word_embeddings[data['text']]
-
-    unigram_prob = alpha * word_weights
-
-    dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
-    context_prob = (1. - alpha) * dot_prod.exp() / Z_s
-
-    log_probs = torch.log(unigram_prob + context_prob)
-    word_log_prob = log_probs.sum(dim=-1)
+    word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
 
     # assume samples in sequences are i.i.d.
     # calculate probabilities for audio and visual as if
@@ -401,16 +439,51 @@ curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch
 
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
 
+def loss2(predictions, y_test):
+    predictions = predictions.cpu().numpy()
+    y_test = y_test.cpu().numpy()
+
+    predictions = predictions.reshape((len(y_test),))
+    mae = np.mean(np.absolute(predictions-y_test))
+    print("mae: ", mae)
+    corr = np.corrcoef(predictions,y_test)[0][1]
+    print("corr: ", corr)
+    mult = round(sum(np.round(predictions)==np.round(y_test))/float(len(y_test)),5)
+    print("mult_acc: ", mult)
+    f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
+    print("mult f_score: ", f_score)
+    true_label = (y_test >= 0)
+    predicted_label = (predictions >= 0)
+    print("Confusion Matrix :")
+    print(confusion_matrix(true_label, predicted_label))
+    print("Classification Report :")
+    print(classification_report(true_label, predicted_label, digits=5))
+    print("Accuracy ", accuracy_score(true_label, predicted_label))
+
+
 def eval_sentiment(data, model, latents):
     n_samples = len(data.dataset)
     loss_function = nn.L1Loss(reduce=False)
     total_loss = 0
+
+    y_test = []
+    predictions = []
+
     with torch.no_grad():
         for j, senti in data:
             senti_predict = model(latents[j])
             loss = loss_function(senti_predict, senti)
             total_loss += loss.sum()
+
+            y_test.append(senti)
+            predictions.append(senti_predict)
+
     print("MAE: {}".format(total_loss / n_samples))
+
+    y_test = torch.cat(y_test)
+    predictions = torch.cat(predictions)
+    print(y_test.size())
+    loss2(predictions, y_test)
 
 def train_sentiment(data, model, latents, n_epochs, valid_niter=10):
     n_samples = len(data.dataset)
@@ -441,6 +514,7 @@ train_sentiment(senti_dataloader, senti_model, curr_embedding, N_EPOCHS)
 
 print("Sentiment predictions after training")
 eval_sentiment(senti_dataloader, senti_model, curr_embedding)
+print("-----------------------------")
 
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 #gen_model = nn.DataParallel(gen_model)
@@ -488,6 +562,7 @@ for i in range(N_EPOCHS):
     if i % valid_niter == 0:
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 
+print("-----------------------------")
 senti_model = SentimentModel(EMBEDDING_DIM, 100).to(device)
 senti_optimizer = optim.SGD(senti_model.parameters(), lr=1e-2)
 
