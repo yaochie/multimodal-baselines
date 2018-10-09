@@ -23,8 +23,7 @@ import data_loader as loader
 from losses import get_log_prob_matrix
 from sentiment_model import train_sentiment, eval_sentiment, train_sentiment_for_latents
 
-sys.path.append('SIF/src')
-import SIF_embedding, params, data_io
+from sif import load_weights, get_word_embeddings  
 
 torch.cuda.set_device(3)
 device = torch.device('cuda')
@@ -83,8 +82,6 @@ Note: loader.load_word_level_features always returns the same split.
 """
 MAX_SEGMENT_LEN = args['seq_len']
 TR_PROPORTION = 2.0/3
-# number of principal components to remove
-RMPC = 1
 
 def load_data(max_len, tr_proportion):
     word2ix = loader.load_word2ix()
@@ -99,6 +96,8 @@ def load_data(max_len, tr_proportion):
     return word2ix, word_embeddings, (train, valid, test)
 
 word2ix, word_embeddings, data = load_data(MAX_SEGMENT_LEN, TR_PROPORTION)
+if args['word_sim_metric'] == 'dot_prod':
+    word_embeddings = F.normalize(word_embeddings)
 train, valid, test = data
 
 """
@@ -145,76 +144,6 @@ train = normalize_data(train)
 valid = normalize_data(valid)
 test = normalize_data(test)
 
-"""
-1. Initialize sentence embedding using the SIF algorithm over training data
-
-word_weights : a / (a + p(w)) - calculate unigram probabilities over training data
-"""
-
-def get_word_weights(word_freq_file, a=1e-3):
-    word_weights = {}
-    N = 0
-
-    with open(word_freq_file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if len(line) > 0:
-                line = line.split()
-                if len(line) == 2:
-                    word_weights[line[0]] = float(line[1])
-                    N += float(line[1])
-                else:
-                    print(line)
-
-    for key, value in word_weights.items():
-        word_weights[key] = a / (a + value / N)
-
-    return word_weights
-
-if os.path.isfile('word_weights.npy'):
-    weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
-else:
-    word_weights = get_word_weights('SIF/auxiliary_data/enwiki_vocab_min200.txt')
-    # print(type(word_weights))
-    #print(word_weights.items()[:5])
-
-    # create numpy matrix of weights using word2ix
-    weights = np.zeros((max(word2ix.values()) + 1))
-    unk = 0
-    for word, ix in word2ix.items():
-        if word.lower() not in word_weights.keys():
-            weights[ix] = 1.
-            unk += 1
-        else:
-            weights[ix] = word_weights[word.lower()]
-    # for word, ix in word2ix.items():
-    print("# of words with unknown weight", unk)
-    print(weights[:5])
-
-    np.save('word_weights.npy', weights, allow_pickle=False)
-
-# get weights for each word in each sentence
-train_w = data_io.seq2weight(train['text'], np.ones(train['text'].shape), weights)
-valid_w = data_io.seq2weight(valid['text'], np.ones(valid['text'].shape), weights)
-test_w = data_io.seq2weight(test['text'], np.ones(test['text'].shape), weights)
-
-weights = torch.tensor(weights, device=device, dtype=torch.float32)
-word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
-
-# normalize word embedding lengths
-# print(word_embeddings.norm(dim=-1).max())
-# print('embed_size', word_embeddings.size())
-# word_embeddings = F.normalize(word_embeddings)
-# print(word_embeddings.norm(dim=-1).max())
-
-#print(word_weights.keys()[:10])
-params = params.params()
-params.rmpc = RMPC
-
-train_embedding = SIF_embedding.SIF_embedding(word_embeddings, train['text'], train_w, params)
-valid_embedding = SIF_embedding.SIF_embedding(word_embeddings, valid['text'], valid_w, params)
-test_embedding = SIF_embedding.SIF_embedding(word_embeddings, test['text'], test_w, params)
-
 class MMData(Dataset):
     def __init__(self, text, audio, visual, device):
         super(Dataset, self).__init__()
@@ -254,6 +183,14 @@ class SentimentData(Dataset):
 
     def __getitem__(self, idx):
         return idx, self.sentiment[idx]
+
+weights = load_weights()
+weights = torch.tensor(weights, device=device, dtype=torch.float32)
+word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
+
+train_embedding = get_word_embeddings(word_embeddings, weights, train['text'])
+valid_embedding = get_word_embeddings(word_embeddings, weights, valid['text'])
+test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
 
 BATCH_SIZE = args['batch_size']
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
