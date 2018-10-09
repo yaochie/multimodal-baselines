@@ -87,7 +87,7 @@ def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
-def get_log_prob_matrix(latents, audio, visual, data, word_embeddings, weights, a=1e-3,
+def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, weights, a=1e-3,
             device=torch.device('cpu')):
     """
     Return the log probability for the batch data given the
@@ -110,17 +110,23 @@ def get_log_prob_matrix(latents, audio, visual, data, word_embeddings, weights, 
     audio_sigma = audio_sigma + epsilon
     visual_sigma = visual_sigma + epsilon
 
-    # word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
-    word_log_prob = get_word_log_prob_angular(latents, weights, word_embeddings, data['text'], a)
+    if args['word_sim_metric'] == 'dot_prod':
+        word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
+    elif args['word_sim_metric'] == 'angular':
+        word_log_prob = get_word_log_prob_angular(latents, weights, word_embeddings, data['text'], a)
+    else:
+        raise NotImplementedError
 
-    # assume samples in sequences are i.i.d.
-    # calculate probabilities for audio and visual as if
-    # sampling from distribution
+    """
+    assume samples in sequences are i.i.d.
+    calculate probabilities for audio and visual as if
+    sampling from distribution
 
-    # audio: (batch, seqlength, n_features)
-    # audio_mu: (batch, n_features)
-    # audio_sigma: (batch, n_features)
-    # independent normals, so just calculate log prob directly
+    audio: (batch, seqlength, n_features)
+    audio_mu: (batch, n_features)
+    audio_sigma: (batch, n_features)
+    independent normals, so just calculate log prob directly
+    """
     audio_log_prob = get_normal_log_prob(audio_mu.unsqueeze(1),
                 audio_sigma.unsqueeze(1), data['covarep'])
     visual_log_prob = get_normal_log_prob(visual_mu.unsqueeze(1),

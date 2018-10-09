@@ -29,6 +29,32 @@ torch.cuda.set_device(3)
 device = torch.device('cuda')
 
 """
+Hyper-parameters:
+- Batch size
+- Hidden size for sentiment model
+- Learning rate
+- Sentiment learning rate
+- Segment len
+- use dot-prod or angular distance
+- # of epochs to optimize embeddings
+- Type of optimizer?
+"""
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--sentiment_hidden_size', type=int, default=100)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--sentiment_lr', type=float, default=1e-2)
+    parser.add_argument('--seq_len', type=int, default=20)
+    parser.add_argument('--word_sim_metric', choices=['angular, dot_prod'], default='angular')
+    parser.add_argument('--n_epochs', type=int, default=100)
+    parser.add_argument('--n_sentiment_epochs', type=int, default=100)
+
+    return vars(parser.parse_args())
+
+args = parse_arguments()
+
+"""
 Procedure:
 1. Initialize sentence embedding using the SIF algorithm
 2. Initialize linear regression model to mean and variance (element-wise independent)
@@ -40,8 +66,10 @@ Procedure:
 Load data
 
 max_segment_len can be varied to compare results?
+
+Note: loader.load_word_level_features always returns the same split.
 """
-MAX_SEGMENT_LEN = 20
+MAX_SEGMENT_LEN = args['seq_len']
 TR_PROPORTION = 2.0/3
 # number of principal components to remove
 RMPC = 1
@@ -163,8 +191,7 @@ word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float
 
 # normalize word embedding lengths
 print(word_embeddings.norm(dim=-1).max())
-print(word_embeddings[:2, :2])
-print(word_embeddings.size())
+print('embed_size', word_embeddings.size())
 # word_embeddings = F.normalize(word_embeddings)
 print(word_embeddings.norm(dim=-1).max())
 
@@ -216,7 +243,7 @@ class SentimentData(Dataset):
     def __getitem__(self, idx):
         return idx, self.sentiment[idx]
 
-BATCH_SIZE = 32
+BATCH_SIZE = args['batch_size']
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 senti_dataset = SentimentData(train['label'], device)
@@ -279,7 +306,7 @@ class AudioVisualGenerator(nn.Module):
 
         return (audio_mu, audio_sigma), (visual_mu, visual_sigma)
 
-EMBEDDING_DIM = 300
+EMBEDDING_DIM = word_embeddings.size()[-1]
 AUDIO_DIM = train['covarep'].shape[-1]
 VISUAL_DIM = train['facet'].shape[-1]
 
@@ -298,27 +325,27 @@ Also calculate log-probability of word embeddings, using model in Arora paper
 Then minimize negative log-probability using gradient descent.
 """
 
-SENTIMENT_HIDDEN_DIM = 100
+SENTIMENT_HIDDEN_DIM = args['sentiment_hidden_size']
 
 valid_niter = 10
 
 # sentiment analysis
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
-N_EPOCHS = 100
 print("Initial sentiment predictions, before optimizing audio and visual")
-train_sentiment_for_latents(curr_embedding, senti_dataloader, SENTIMENT_HIDDEN_DIM, N_EPOCHS, device)
+train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
 
 gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
-#gen_model = nn.DataParallel(gen_model)
 
 print("Training...")
 
 curr_embedding.requires_grad = True
 
-optimizer = optim.SGD([curr_embedding], lr=1e-2)
+lr = args['lr']
+optimizer = optim.SGD([curr_embedding], lr=lr)
 # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
+N_EPOCHS = args['n_epochs']
 start_time = time.time()
 for i in range(N_EPOCHS):
     epoch_loss = 0.
@@ -335,7 +362,7 @@ for i in range(N_EPOCHS):
         if visual[1].min().abs() < 1e-7:
             print("boot!")
 
-        log_prob = -get_log_prob_matrix(curr_embedding[j], audio, visual,
+        log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
                 {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device)
 
         avg_log_prob = log_prob.mean()
@@ -351,5 +378,5 @@ for i in range(N_EPOCHS):
 curr_embedding.requires_grad = False
 
 print("Initial sentiment predictions, AFTER optimizing audio and visual")
-train_sentiment_for_latents(curr_embedding, senti_dataloader, SENTIMENT_HIDDEN_DIM, N_EPOCHS, device)
+train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
 

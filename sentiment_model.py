@@ -44,10 +44,13 @@ def eval_sentiment(data, model, latents):
     print(y_test.size())
     full_loss(predictions, y_test)
 
-def train_sentiment(data, model, latents, n_epochs, valid_niter=10):
+def train_sentiment(args, data, model, latents, valid_niter=10):
+    n_epochs = args['n_sentiment_epochs']
+    lr = args['sentiment_lr']
+
     n_samples = len(data.dataset)
     loss_function = nn.L1Loss(reduce=False)
-    optimizer = optim.SGD(model.parameters(), lr=1e-2)
+    optimizer = optim.SGD(model.parameters(), lr=lr)
 
     for i in range(n_epochs):
         epoch_loss = 0
@@ -64,7 +67,9 @@ def train_sentiment(data, model, latents, n_epochs, valid_niter=10):
         if i % valid_niter == 0:
             print("Epoch {}: {}".format(i, epoch_loss / n_samples))
 
-def train_sentiment_for_latents(latents, sentiment_data, hidden_dim, n_epochs, device):
+def train_sentiment_for_latents(args, latents, sentiment_data, device):
+    hidden_dim = args['sentiment_hidden_size']
+
     embedding_dim = latents.size()[-1]
     senti_model = SentimentModel(embedding_dim, hidden_dim).to(device)
 
@@ -72,7 +77,7 @@ def train_sentiment_for_latents(latents, sentiment_data, hidden_dim, n_epochs, d
     eval_sentiment(sentiment_data, senti_model, latents)
 
     print("Training sentiment model on sentence embeddings...")
-    train_sentiment(sentiment_data, senti_model, latents, n_epochs)
+    train_sentiment(args, sentiment_data, senti_model, latents)
 
     print("Sentiment predictions after training")
     eval_sentiment(sentiment_data, senti_model, latents)
