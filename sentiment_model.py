@@ -41,7 +41,7 @@ def eval_sentiment(data, model, latents):
 
     y_test = torch.cat(y_test)
     predictions = torch.cat(predictions)
-    print(y_test.size())
+    # print(y_test.size())
     full_loss(predictions, y_test)
 
 def train_sentiment(args, data, model, latents, valid_niter=10):

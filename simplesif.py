@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import sys
 import argparse
@@ -39,18 +40,29 @@ Hyper-parameters:
 - # of epochs to optimize embeddings
 - Type of optimizer?
 """
+def read_config(config_file):
+    # Future work: handle default values?
+    return json.load(open(config_file, 'r'))
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument('config_file')
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--sentiment_hidden_size', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--sentiment_lr', type=float, default=1e-2)
-    parser.add_argument('--seq_len', type=int, default=20)
-    parser.add_argument('--word_sim_metric', choices=['angular, dot_prod'], default='angular')
-    parser.add_argument('--n_epochs', type=int, default=100)
-    parser.add_argument('--n_sentiment_epochs', type=int, default=100)
+    # parser.add_argument('--sentiment_hidden_size', type=int, default=100)
+    # parser.add_argument('--lr', type=float, default=1e-3)
+    # parser.add_argument('--sentiment_lr', type=float, default=1e-2)
+    # parser.add_argument('--seq_len', type=int, default=20)
+    # parser.add_argument('--word_sim_metric', choices=['angular, dot_prod'], default='angular')
+    # parser.add_argument('--n_epochs', type=int, default=100)
+    # parser.add_argument('--n_sentiment_epochs', type=int, default=100)
 
-    return vars(parser.parse_args())
+    args = vars(parser.parse_args())
+    config = read_config(args['config_file'])
+    print('######################################')
+    print("Config: {}".format(config['config_num']))
+    args.update(config)
+
+    return args
 
 args = parse_arguments()
 
@@ -107,13 +119,13 @@ def normalize_data(train):
     # normalize audio and visual features to [-1, 1]
     audio_min = train['covarep'].min((0, 1))
     audio_max = train['covarep'].max((0, 1))
-    print(audio_max - audio_min)
+    # print(audio_max - audio_min)
     audio_diff = audio_max - audio_min
     audio_nonzeros = (audio_diff == 0).nonzero()[0]
-    print(audio_nonzeros)
+    # print(audio_nonzeros)
     audio_nonzeros = audio_diff.nonzero()[0]
-    print(train['covarep'].shape)
-    print(train['covarep'][:, :, audio_nonzeros].shape)
+    # print(train['covarep'].shape)
+    # print(train['covarep'][:, :, audio_nonzeros].shape)
 
     train['covarep'] = train['covarep'][:, :, audio_nonzeros]
 
@@ -163,7 +175,7 @@ if os.path.isfile('word_weights.npy'):
     weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
 else:
     word_weights = get_word_weights('SIF/auxiliary_data/enwiki_vocab_min200.txt')
-    print(type(word_weights))
+    # print(type(word_weights))
     #print(word_weights.items()[:5])
 
     # create numpy matrix of weights using word2ix
@@ -190,10 +202,10 @@ weights = torch.tensor(weights, device=device, dtype=torch.float32)
 word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
 
 # normalize word embedding lengths
-print(word_embeddings.norm(dim=-1).max())
-print('embed_size', word_embeddings.size())
+# print(word_embeddings.norm(dim=-1).max())
+# print('embed_size', word_embeddings.size())
 # word_embeddings = F.normalize(word_embeddings)
-print(word_embeddings.norm(dim=-1).max())
+# print(word_embeddings.norm(dim=-1).max())
 
 #print(word_weights.keys()[:10])
 params = params.params()
@@ -247,7 +259,7 @@ BATCH_SIZE = args['batch_size']
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 senti_dataset = SentimentData(train['label'], device)
-print(len(senti_dataset))
+# print(len(senti_dataset))
 senti_dataloader = DataLoader(senti_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 """
@@ -332,6 +344,7 @@ valid_niter = 10
 # sentiment analysis
 curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
 print("Initial sentiment predictions, before optimizing audio and visual")
 train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
 
@@ -377,6 +390,9 @@ for i in range(N_EPOCHS):
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 curr_embedding.requires_grad = False
 
+print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 print("Initial sentiment predictions, AFTER optimizing audio and visual")
 train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
+
+sys.stdout.flush()
 
