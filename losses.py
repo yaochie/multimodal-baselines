@@ -88,7 +88,7 @@ def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     return word_log_prob
 
 def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, weights, a=1e-3,
-            device=torch.device('cpu')):
+            device=torch.device('cpu'), verbose=False):
     """
     Return the log probability for the batch data given the
     latent variables, and the derived audio and visual parameters.
@@ -150,8 +150,19 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, wei
     if bad:
         sys.exit()
 
+    if verbose:
+        print("Visual: {}".format(visual_log_prob))
+        print("Audio: {}".format(audio_log_prob))
+        print("Word: {}".format(word_log_prob))
+
     # final output: one value per datapoint
-    total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
+    if 'word_loss_weight' in args:
+        word_weight = args['word_loss_weight']
+        aud_weight = vis_weight = (1. - word_weight) / 2
+        total_log_prob = aud_weight * audio_log_prob + vis_weight * visual_log_prob + word_weight * word_log_prob
+    else:
+        total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
+    # total_log_prob = audio_log_prob + visual_log_prob
     return total_log_prob
 
 def full_loss(predictions, y_test):
@@ -174,3 +185,4 @@ def full_loss(predictions, y_test):
     print("Classification Report :")
     print(classification_report(true_label, predicted_label, digits=5))
     print("Accuracy {}".format(accuracy_score(true_label, predicted_label)))
+    return accuracy_score(true_label, predicted_label)
