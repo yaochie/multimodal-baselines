@@ -22,6 +22,8 @@ import numpy as np
 import data_loader as loader
 from losses import get_log_prob_matrix
 from sentiment_model import train_sentiment, eval_sentiment, train_sentiment_for_latents
+from models import AudioVisualGeneratorConcat
+from analyze_embeddings import get_closest_words
 
 from sif import load_weights, get_word_embeddings  
 
@@ -47,6 +49,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--n_runs', type=int, default=1)
     # parser.add_argument('--sentiment_hidden_size', type=int, default=100)
     # parser.add_argument('--lr', type=float, default=1e-3)
     # parser.add_argument('--sentiment_lr', type=float, default=1e-2)
@@ -96,8 +99,6 @@ def load_data(max_len, tr_proportion):
     return word2ix, word_embeddings, (train, valid, test)
 
 word2ix, word_embeddings, data = load_data(MAX_SEGMENT_LEN, TR_PROPORTION)
-if args['word_sim_metric'] == 'dot_prod':
-    word_embeddings = F.normalize(word_embeddings)
 train, valid, test = data
 
 """
@@ -188,6 +189,9 @@ weights = load_weights()
 weights = torch.tensor(weights, device=device, dtype=torch.float32)
 word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
 
+if args['word_sim_metric'] == 'dot_prod':
+    word_embeddings = F.normalize(word_embeddings)
+
 train_embedding = get_word_embeddings(word_embeddings, weights, train['text'])
 valid_embedding = get_word_embeddings(word_embeddings, weights, valid['text'])
 test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
@@ -196,7 +200,6 @@ BATCH_SIZE = args['batch_size']
 dataset = MMData(train['text'], train['covarep'], train['facet'], device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 senti_dataset = SentimentData(train['label'], device)
-# print(len(senti_dataset))
 senti_dataloader = DataLoader(senti_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 """
@@ -278,58 +281,176 @@ SENTIMENT_HIDDEN_DIM = args['sentiment_hidden_size']
 
 valid_niter = 10
 
-# sentiment analysis
-curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+joint = True
+if joint:
+    for i in range(args['n_runs']):
+        config_name = os.path.split(os.path.split(args['config_file'])[0])[1]
+        #config_name = 'first_model_2_2'
+        folder = 'model_saves/{}/config_{}_run_{}'.format(config_name, args['config_num'], i)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        
+        pre_path = os.path.join(folder, 'pre')
+        post_path = os.path.join(folder, 'post')
 
-print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-print("Initial sentiment predictions, before optimizing audio and visual")
-train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
+        if not os.path.isdir(pre_path):
+            os.mkdir(pre_path)
+        if not os.path.isdir(post_path):
+            os.mkdir(post_path)
 
-gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
+        curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
-print("Training...")
+        # print closest words before training
+        pre_closest = get_closest_words(curr_embedding.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
 
-curr_embedding.requires_grad = True
+        print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+        print("Initial sentiment predictions, before optimizing audio and visual")
+        train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device,
+                model_save_path=pre_path)
 
-lr = args['lr']
-optimizer = optim.SGD([curr_embedding], lr=lr)
-# scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
+        # save initial embeddings
+        torch.save(curr_embedding, os.path.join(pre_path, 'embed.bin'))
 
-N_EPOCHS = args['n_epochs']
-start_time = time.time()
-for i in range(N_EPOCHS):
-    epoch_loss = 0.
-    iters = 0
-    #curr_embedding = F.normalize(curr_embedding)
-    for j, text, aud, vis in dataloader:
-        iters += 1
-        optimizer.zero_grad()
-        # print(curr_embedding[:10])
-        audio, visual = gen_model(curr_embedding[j])
+        gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
 
-        if audio[1].min().abs() < 1e-7:
-            print("boo!")
-        if visual[1].min().abs() < 1e-7:
-            print("boot!")
+        print("Training...")
 
-        log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
-                {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device)
+        curr_embedding.requires_grad = True
 
-        avg_log_prob = log_prob.mean()
-        avg_log_prob.backward(retain_graph=True)
+        lr = args['lr']
+        optimizer = optim.SGD([curr_embedding], lr=lr)
+        # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
-        # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
+        N_EPOCHS = args['n_epochs']
+        start_time = time.time()
+        train_losses = []
+        for i in range(N_EPOCHS):
+            epoch_loss = 0.
+            iters = 0
+            #curr_embedding = F.normalize(curr_embedding)
+            for j, text, aud, vis in dataloader:
+                iters += 1
+                optimizer.zero_grad()
 
-        optimizer.step()
-        epoch_loss += avg_log_prob
-    # scheduler.step()
-    if i % valid_niter == 0:
+                audio, visual = gen_model(curr_embedding[j])
+
+                if audio[1].min().abs() < 1e-7:
+                    print("boo!")
+                if visual[1].min().abs() < 1e-7:
+                    print("boot!")
+
+                log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
+                        {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device, verbose=False)
+
+                avg_log_prob = log_prob.mean()
+                #avg_log_prob.backward(retain_graph=True)
+                avg_log_prob.backward()
+
+                # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
+
+                optimizer.step()
+                epoch_loss += avg_log_prob
+            # scheduler.step()
+            train_losses.append(epoch_loss)
+            if i % valid_niter == 0:
+                print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
-curr_embedding.requires_grad = False
+        curr_embedding.requires_grad = False
 
-print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-print("Initial sentiment predictions, AFTER optimizing audio and visual")
-train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
+        with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
+            for loss in train_losses:
+                f.write('{}\n'.format(loss))
+        torch.save(curr_embedding, os.path.join(post_path, 'embed.bin'))
+
+        post_closest = get_closest_words(curr_embedding.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
+
+        with open(os.path.join(folder, 'closest_words.txt'), 'w') as f:
+            for pre, post in zip(pre_closest, post_closest):
+                f.write('{}\t{}\n'.format(' '.join(pre), ' '.join(post)))
+
+        print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+        print("Initial sentiment predictions, AFTER optimizing audio and visual")
+        train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device,
+                model_save_path=post_path)
+else:
+    # sentiment analysis
+    AUDIO_EMBEDDING_DIM = 20
+    VISUAL_EMBEDDING_DIM = 20
+
+    gen_model = AudioVisualGeneratorConcat(AUDIO_EMBEDDING_DIM, VISUAL_EMBEDDING_DIM, AUDIO_DIM,
+                    VISUAL_DIM, frozen_weights=True).to(device)
+    text_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+
+    curr_embedding = gen_model.init_embeddings(text_embedding)
+
+    print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+    print("Initial sentiment predictions, before optimizing audio and visual")
+    train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
+
+    #gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
+
+    print("Training...")
+
+    print(curr_embedding[:5, :5])
+    print(curr_embedding[:5, 305:310])
+
+    curr_embedding.requires_grad = True
+
+    lr = args['lr']
+    lr = 1e-6
+    optimizer = optim.SGD([curr_embedding], lr=lr)
+    # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
+
+    N_EPOCHS = args['n_epochs']
+    #N_EPOCHS = 200
+    start_time = time.time()
+
+    """
+    Assumption: the word embedding is already optimized (since derived from MLE).
+    So we just optimize the audio and visual.
+    """
+
+    for i in range(N_EPOCHS):
+        epoch_loss = 0.
+        iters = 0
+        #curr_embedding = F.normalize(curr_embedding)
+        for j, text, aud, vis in dataloader:
+            iters += 1
+            optimizer.zero_grad()
+            # print(curr_embedding[:10])
+
+            audio, visual = gen_model(curr_embedding[j, 300:320], curr_embedding[j, 320:])
+
+            if audio[1].min().abs() < 1e-7:
+                print("boo!")
+            if visual[1].min().abs() < 1e-7:
+                print("boot!")
+
+            # only optimize audio and visual?
+            # if optimize word also, seems to blow up
+            log_prob = -get_log_prob_matrix(args, curr_embedding[j, :300], audio, visual,
+                    {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device)
+
+            avg_log_prob = log_prob.mean()
+            avg_log_prob.backward(retain_graph=True)
+
+            # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
+            # print(curr_embedding.grad[:5, :5])
+
+            optimizer.step()
+            epoch_loss += avg_log_prob
+        # scheduler.step()
+
+        if i % valid_niter == 0:
+            print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+    curr_embedding.requires_grad = False
+
+    print(curr_embedding[:5, :5])
+    print(curr_embedding[:5, 305:310])
+
+    print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+    print("Initial sentiment predictions, AFTER optimizing audio and visual")
+    train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device, verbose=True)
 
 sys.stdout.flush()
 
