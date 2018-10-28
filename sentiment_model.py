@@ -89,19 +89,22 @@ def train_sentiment(args, model, train_data, train_latents,
     n_bad = 0
     for i in range(n_epochs):
         epoch_loss = 0
+        n_batches = 0
         for j, senti in train_data:
+            n_batches += 1
             model.zero_grad()
             senti_predict = model(train_latents[j])
             
             loss = loss_function(senti_predict, senti)
-            epoch_loss += loss.sum()
+            epoch_loss += loss.mean()
 
             loss.mean().backward()
             optimizer.step()
-
-        train_losses.append(epoch_loss)
+        
+        avg_epoch_loss = epoch_loss / n_batches
+        train_losses.append(avg_epoch_loss)
         if i % valid_niter == 0:
-            print("Epoch {}: {}".format(i, epoch_loss / n_samples))
+            print("Epoch {}: {}".format(i, epoch_loss / n_batches))
 
             batches = 0
             valid_loss = 0
@@ -112,8 +115,10 @@ def train_sentiment(args, model, train_data, train_latents,
 
                     valid_loss += loss.mean()
                     batches += 1
-            print("Average validation loss: {}".format(valid_loss / batches))
-            valid_losses.append(valid_loss)
+
+            avg_valid_loss = valid_loss / batches
+            print("Average validation loss: {}".format(avg_valid_loss))
+            valid_losses.append(avg_valid_loss)
 
             """
             if best_valid_loss is None:
