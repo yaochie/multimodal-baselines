@@ -51,7 +51,7 @@ def parse_arguments():
     parser.add_argument('config_file')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_runs', type=int, default=1)
-    parser.add_argument('--semi_sup_idxes', choices=[str(x) for x in np.arange(0.1, 1, 0.1)])
+    parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
     parser.add_argument('--config_name', help='override config name in config file')
     # parser.add_argument('--sentiment_hidden_size', type=int, default=100)
     # parser.add_argument('--lr', type=float, default=1e-3)

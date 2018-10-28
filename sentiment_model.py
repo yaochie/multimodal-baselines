@@ -73,16 +73,20 @@ def eval_sentiment(data, model, latents):
     return full_loss(predictions, y_test)
 
 def train_sentiment(args, model, train_data, train_latents,
-            valid_data, valid_latents, valid_niter=10,
-            verbose=False):
+            valid_data, valid_latents, model_loader, valid_niter=10,
+            verbose=False, model_save_path=None):
     n_epochs = args['n_sentiment_epochs']
     lr = args['sentiment_lr']
+    # patience = 5
 
     n_samples = len(train_data.dataset)
     loss_function = nn.L1Loss(reduce=False)
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
     train_losses = []
+    valid_losses = []
+    best_valid_loss = None
+    n_bad = 0
     for i in range(n_epochs):
         epoch_loss = 0
         for j, senti in train_data:
@@ -109,9 +113,26 @@ def train_sentiment(args, model, train_data, train_latents,
                     valid_loss += loss.mean()
                     batches += 1
             print("Average validation loss: {}".format(valid_loss / batches))
+            valid_losses.append(valid_loss)
+
+            """
+            if best_valid_loss is None:
+                best_valid_loss = valid_loss
+            elif best_valid_loss > valid_loss:
+                n_bad = 0
+                best_valid_loss = valid_loss
+                if model_save_path:
+                    save_sentiment(model_save_path, model)
+            else:
+                # TODO: reload and continue
+                n_bad += 1
+                if n_bad > patience:
+                    print("early stopping...")
+                    break
+            """
 
     print("Epoch {}: {}".format(i, epoch_loss / n_samples))
-    return train_losses
+    return train_losses, valid_losses
 
 def train_sentiment_for_latents(args, latents, sentiment_data, device,
             (n_train, n_valid, n_test),
@@ -148,11 +169,16 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
 
     print("Training sentiment model on sentence embeddings...")
     senti_model.train()
-    train_losses = train_sentiment(args, senti_model, train_loader, train_latents,
-            valid_loader, valid_latents, verbose=verbose)
+    model_loader = lambda: load_sentiment(model_save_path, embedding_dim, hidden_dim, device)
+    train_losses, valid_losses = train_sentiment(args, senti_model, train_loader, train_latents,
+            valid_loader, valid_latents, model_loader,
+            verbose=verbose, model_save_path=model_save_path)
 
     with open(os.path.join(model_save_path, 'senti_train_loss.txt'), 'w') as f:
         for loss in train_losses:
+            f.write('{}\n'.format(loss))
+    with open(os.path.join(model_save_path, 'senti_valid_loss.txt'), 'w') as f:
+        for loss in valid_losses:
             f.write('{}\n'.format(loss))
     if model_save_path is not None:
         save_sentiment(model_save_path, senti_model)
