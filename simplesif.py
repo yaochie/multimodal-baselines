@@ -18,6 +18,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score, f1_score
 
 import numpy as np
+import h5py
 
 import data_loader as loader
 from losses import get_log_prob_matrix
@@ -27,7 +28,7 @@ from analyze_embeddings import get_closest_words
 
 from sif import load_weights, get_word_embeddings  
 
-torch.cuda.set_device(3)
+torch.cuda.set_device(1)
 device = torch.device('cuda')
 
 """
@@ -50,6 +51,8 @@ def parse_arguments():
     parser.add_argument('config_file')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_runs', type=int, default=1)
+    parser.add_argument('--semi_sup_idxes', choices=[str(x) for x in np.arange(0.1, 1, 0.1)])
+    parser.add_argument('--config_name', help='override config name in config file')
     # parser.add_argument('--sentiment_hidden_size', type=int, default=100)
     # parser.add_argument('--lr', type=float, default=1e-3)
     # parser.add_argument('--sentiment_lr', type=float, default=1e-2)
@@ -86,7 +89,7 @@ Note: loader.load_word_level_features always returns the same split.
 MAX_SEGMENT_LEN = args['seq_len']
 TR_PROPORTION = 2.0/3
 
-def load_data(max_len, tr_proportion):
+def load_data():
     word2ix = loader.load_word2ix()
 
     # load glove 300d word embeddings
@@ -94,11 +97,29 @@ def load_data(max_len, tr_proportion):
     
     # TODO: save train, valid, test in file so that don't have to
     # regenerate each time
-    train, valid, test = loader.load_word_level_features(max_len, tr_proportion)
+    #train, valid, test = loader.load_word_level_features(max_len, tr_proportion)
+
+    with h5py.File('mosi_data.h5', 'r') as f:
+        keys = [
+            'facet',
+            'covarep',
+            'text',
+            'lengths',
+            'label',
+            'id',
+        ]
+        train = {}
+        valid = {}
+        test = {}
+
+        for k in keys:
+            train[k] = f['train'][k][:]
+            valid[k] = f['valid'][k][:]
+            test[k] = f['test'][k][:]
 
     return word2ix, word_embeddings, (train, valid, test)
 
-word2ix, word_embeddings, data = load_data(MAX_SEGMENT_LEN, TR_PROPORTION)
+word2ix, word_embeddings, data = load_data()
 train, valid, test = data
 
 """
@@ -145,6 +166,14 @@ train = normalize_data(train)
 valid = normalize_data(valid)
 test = normalize_data(test)
 
+n_train = train['label'].shape[0]
+n_valid = valid['label'].shape[0]
+n_test = test['label'].shape[0]
+
+combined_text = np.concatenate([train['text'], valid['text'], test['text']], axis=0)
+combined_covarep = np.concatenate([train['covarep'], valid['covarep'], test['covarep']], axis=0)
+combined_facet = np.concatenate([train['facet'], valid['facet'], test['facet']], axis=0)
+
 class MMData(Dataset):
     def __init__(self, text, audio, visual, device):
         super(Dataset, self).__init__()
@@ -170,21 +199,6 @@ class MMData(Dataset):
     def __getitem__(self, idx):
         return idx, self.text[idx], self.audio[idx], self.visual[idx]
 
-class SentimentData(Dataset):
-    def __init__(self, sentiment, device):
-        super(Dataset, self).__init__()
-
-        if not torch.is_tensor(sentiment):
-            sentiment = torch.tensor(sentiment, device=device, dtype=torch.float32)
-
-        self.sentiment = sentiment
-
-    def __len__(self):
-        return self.sentiment.size()[0]
-
-    def __getitem__(self, idx):
-        return idx, self.sentiment[idx]
-
 weights = load_weights()
 weights = torch.tensor(weights, device=device, dtype=torch.float32)
 word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
@@ -195,12 +209,12 @@ if args['word_sim_metric'] == 'dot_prod':
 train_embedding = get_word_embeddings(word_embeddings, weights, train['text'])
 valid_embedding = get_word_embeddings(word_embeddings, weights, valid['text'])
 test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
+combined_embedding = np.concatenate([train_embedding, valid_embedding, test_embedding], axis=0)
 
 BATCH_SIZE = args['batch_size']
-dataset = MMData(train['text'], train['covarep'], train['facet'], device)
+# dataset = MMData(train['text'], train['covarep'], train['facet'], device)
+dataset = MMData(combined_text, combined_covarep, combined_facet, device)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-senti_dataset = SentimentData(train['label'], device)
-senti_dataloader = DataLoader(senti_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 """
 2. Initialize regression model to generate mean and variance of audio and
@@ -281,14 +295,26 @@ SENTIMENT_HIDDEN_DIM = args['sentiment_hidden_size']
 
 valid_niter = 10
 
+sentiment_data = (train['label'], valid['label'], test['label'])
+sentiment_train_idxes = None
+if args['semi_sup_idxes'] is not None:
+    with h5py.File('subset_idxes.h5', 'r') as f:
+        sentiment_train_idxes = f[args['semi_sup_idxes']][:]
+        print(sentiment_train_idxes.shape)
+
 joint = True
 if joint:
     for i in range(args['n_runs']):
-        config_name = os.path.split(os.path.split(args['config_file'])[0])[1]
-        #config_name = 'first_model_2_2'
+        if args['config_name']:
+            config_name = args['config_name']
+        else:
+            config_name = os.path.split(os.path.split(args['config_file'])[0])[1]
+        
         folder = 'model_saves/{}/config_{}_run_{}'.format(config_name, args['config_num'], i)
         if not os.path.isdir(folder):
             os.makedirs(folder)
+
+        json.dump(args, open(os.path.join(folder, 'config.json'), 'w'))
         
         pre_path = os.path.join(folder, 'pre')
         post_path = os.path.join(folder, 'post')
@@ -298,14 +324,15 @@ if joint:
         if not os.path.isdir(post_path):
             os.mkdir(post_path)
 
-        curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+        curr_embedding = torch.tensor(combined_embedding.copy(), device=device, dtype=torch.float32)
 
         # print closest words before training
         pre_closest = get_closest_words(curr_embedding.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
 
         print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
         print("Initial sentiment predictions, before optimizing audio and visual")
-        train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device,
+        train_sentiment_for_latents(args, curr_embedding, sentiment_data, device,
+                (n_train, n_valid, n_test), train_idxes=sentiment_train_idxes,
                 model_save_path=pre_path)
 
         # save initial embeddings
@@ -370,9 +397,12 @@ if joint:
 
         print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
         print("Initial sentiment predictions, AFTER optimizing audio and visual")
-        train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device,
-                model_save_path=post_path)
+        train_sentiment_for_latents(args, curr_embedding, sentiment_data, device,
+                (n_train, n_valid, n_test), train_idxes=sentiment_train_idxes,
+                model_save_path=pre_path)
 else:
+    raise NotImplementedError
+
     # sentiment analysis
     AUDIO_EMBEDDING_DIM = 20
     VISUAL_EMBEDDING_DIM = 20
