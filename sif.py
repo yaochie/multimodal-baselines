@@ -3,8 +3,9 @@ import os
 
 import numpy as np
 
-sys.path.append('SIF/src')
-import SIF_embedding, params, data_io
+#sys.path.append('SIF/src')
+#import SIF_embedding, params, data_io
+from sif_functions import Params, seq2weight, SIF_embedding
 
 """
 1. Initialize sentence embedding using the SIF algorithm over training data
@@ -57,32 +58,20 @@ def load_weights():
     return weights
 
 def get_sentence_word_weights(text, weights):
-    return data_io.seq2weight(text, np.ones(text.shape), weights)
+    """
+    get weights for each word in each sentence
+    """
+    return seq2weight(text, np.ones(text.shape), weights)
 
-# get weights for each word in each sentence
-# train_w = data_io.seq2weight(train['text'], np.ones(train['text'].shape), weights)
-# valid_w = data_io.seq2weight(valid['text'], np.ones(valid['text'].shape), weights)
-# test_w = data_io.seq2weight(test['text'], np.ones(test['text'].shape), weights)
-# 
-# weights = torch.tensor(weights, device=device, dtype=torch.float32)
-# word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
-
-# normalize word embedding lengths
-# print(word_embeddings.norm(dim=-1).max())
-# print('embed_size', word_embeddings.size())
-# word_embeddings = F.normalize(word_embeddings)
-# print(word_embeddings.norm(dim=-1).max())
-
-#print(word_weights.keys()[:10])
 def get_word_embeddings(word_embeddings, weights, text):
     text_w = get_sentence_word_weights(text, weights)
 
     # number of principal components to remove
     RMPC = 1
-    p = params.params()
+    p = Params()
     p.rmpc = RMPC
 
-    embedding = SIF_embedding.SIF_embedding(word_embeddings, text, text_w, p)
+    embedding = SIF_embedding(word_embeddings, text, text_w, p)
 
     return embedding
 
