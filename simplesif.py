@@ -28,9 +28,6 @@ from analyze_embeddings import get_closest_words
 
 from sif import load_weights, get_word_embeddings  
 
-torch.cuda.set_device(1)
-device = torch.device('cuda')
-
 """
 Hyper-parameters:
 - Batch size
@@ -53,13 +50,9 @@ def parse_arguments():
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
     parser.add_argument('--config_name', help='override config name in config file')
-    # parser.add_argument('--sentiment_hidden_size', type=int, default=100)
-    # parser.add_argument('--lr', type=float, default=1e-3)
-    # parser.add_argument('--sentiment_lr', type=float, default=1e-2)
-    # parser.add_argument('--seq_len', type=int, default=20)
-    # parser.add_argument('--word_sim_metric', choices=['angular, dot_prod'], default='angular')
-    # parser.add_argument('--n_epochs', type=int, default=100)
-    # parser.add_argument('--n_sentiment_epochs', type=int, default=100)
+    parser.add_argument('--cuda_device', type=int, choices=list(range(4)))
+    parser.add_argument('--lr_decay', type=float, default=0.5)
+    parser.add_argument('--early_stopping', action='store_true')
 
     args = vars(parser.parse_args())
     config = read_config(args['config_file'])
@@ -70,6 +63,13 @@ def parse_arguments():
     return args
 
 args = parse_arguments()
+
+if args['cuda_device']:
+    torch.cuda.set_device(args['cuda_device'])
+else:
+    torch.cuda.set_device(3)
+
+device = torch.device('cuda')
 
 """
 Procedure:
@@ -399,7 +399,7 @@ if joint:
         print("Initial sentiment predictions, AFTER optimizing audio and visual")
         train_sentiment_for_latents(args, curr_embedding, sentiment_data, device,
                 (n_train, n_valid, n_test), train_idxes=sentiment_train_idxes,
-                model_save_path=pre_path)
+                model_save_path=post_path)
 else:
     raise NotImplementedError
 
