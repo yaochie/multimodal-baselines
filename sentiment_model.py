@@ -75,9 +75,15 @@ def eval_sentiment(data, model, latents):
 def train_sentiment(args, model, train_data, train_latents,
             valid_data, valid_latents, model_loader, valid_niter=10,
             verbose=False, model_save_path=None):
+    """
+    Train sentiment model
+    TODO: implement early stopping
+    """
+
     n_epochs = args['n_sentiment_epochs']
     lr = args['sentiment_lr']
-    # patience = 5
+    patience = 7
+    n_trials = 3
 
     n_samples = len(train_data.dataset)
     loss_function = nn.L1Loss(reduce=False)
@@ -85,8 +91,9 @@ def train_sentiment(args, model, train_data, train_latents,
 
     train_losses = []
     valid_losses = []
-    best_valid_loss = None
     n_bad = 0
+    n_bad_trials = 0
+
     for i in range(n_epochs):
         epoch_loss = 0
         n_batches = 0
@@ -104,8 +111,6 @@ def train_sentiment(args, model, train_data, train_latents,
         avg_epoch_loss = epoch_loss / n_batches
         train_losses.append(avg_epoch_loss)
         if i % valid_niter == 0:
-            print("Epoch {}: {}".format(i, epoch_loss / n_batches))
-
             batches = 0
             valid_loss = 0
             with torch.no_grad():
@@ -117,31 +122,47 @@ def train_sentiment(args, model, train_data, train_latents,
                     batches += 1
 
             avg_valid_loss = valid_loss / batches
-            print("Average validation loss: {}".format(avg_valid_loss))
+            print("Epoch {}: {} (avg val loss {})".format(i, epoch_loss / n_batches,
+                    avg_valid_loss))
+
+            is_better = len(valid_losses) == 0 or avg_valid_loss < min(valid_losses)
             valid_losses.append(avg_valid_loss)
 
-            """
-            if best_valid_loss is None:
-                best_valid_loss = valid_loss
-            elif best_valid_loss > valid_loss:
-                n_bad = 0
-                best_valid_loss = valid_loss
-                if model_save_path:
-                    save_sentiment(model_save_path, model)
-            else:
-                # TODO: reload and continue
-                n_bad += 1
-                if n_bad > patience:
-                    print("early stopping...")
-                    break
-            """
+            if args['early_stopping']:
+                if is_better:
+                    n_bad = 0
+                    if model_save_path is not None:
+                        torch.save({
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                        }, os.path.join(model_save_path, 'senti.bin'))
+                else:
+                    print('patience {}'.format(n_bad))
+                    n_bad += 1
+                    if n_bad >= patience:
+                        n_bad_trials += 1
+                        if n_bad_trials < n_trials:
+                            print("reloading model...")
+                            checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
+                            model.load_state_dict(checkpoint['model_state_dict'])
+                            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+                            # decay learning rate
+                            lr = lr * args['lr_decay']
+                            for g in optimizer.param_groups:
+                                g['lr'] = lr
+                            n_bad = 0
+                        else:
+                            print("early stopping...")
+                            break
 
     print("Epoch {}: {}".format(i, epoch_loss / n_samples))
     return train_losses, valid_losses
 
-def train_sentiment_for_latents(args, latents, sentiment_data, device,
-            (n_train, n_valid, n_test),
+def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
             verbose=False, model_save_path=None, train_idxes=None):
+
+    (n_train, n_valid, n_test) = counts
     hidden_dim = args['sentiment_hidden_size']
 
     embedding_dim = latents.size()[-1]
@@ -185,8 +206,15 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
     with open(os.path.join(model_save_path, 'senti_valid_loss.txt'), 'w') as f:
         for loss in valid_losses:
             f.write('{}\n'.format(loss))
-    if model_save_path is not None:
-        save_sentiment(model_save_path, senti_model)
+
+    if not args['early_stopping']:
+        if model_save_path is not None:
+            save_sentiment(model_save_path, senti_model)
+    else:
+        print('reloading best')
+        model = SentimentModel(embedding_dim, hidden_dim).to(device)
+        checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
+        model.load_state_dict(checkpoint['model_state_dict'])
 
     print("Sentiment predictions after training")
     senti_model.eval()
