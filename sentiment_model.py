@@ -68,8 +68,8 @@ def eval_sentiment(data, model, latents):
 
     print("MAE: {}".format(total_loss / n_samples))
 
-    y_test = torch.cat(y_test)
-    predictions = torch.cat(predictions)
+    y_test = torch.cat(y_test).cpu().numpy()
+    predictions = torch.cat(predictions).cpu().numpy()
     # print(y_test.size())
     return full_loss(predictions, y_test)
 

@@ -174,8 +174,9 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
     return total_log_prob
 
 def full_loss(predictions, y_test):
-    predictions = predictions.cpu().numpy()
-    y_test = y_test.cpu().numpy()
+    """
+    predictions and y_test should be numpy matrices
+    """
 
     predictions = predictions.reshape((len(y_test),))
     mae = np.mean(np.absolute(predictions-y_test))
