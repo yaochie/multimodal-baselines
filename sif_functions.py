@@ -35,6 +35,22 @@ def get_weighted_average(We, x, w):
     """
     n_samples = x.shape[0]
     emb = np.zeros((n_samples, We.shape[1]))
+
+    """
+    print(w.shape)
+    print(x.shape)
+    print(We.shape)
+    print(emb.shape)
+    print(w[1,:].shape)
+    print(We[x[1,:],:].shape)
+    (1284, 20)
+    (1284, 20)
+    torch.Size([3016, 300])
+    (1284, 300)
+    (20,)
+    torch.Size([20, 300])
+    """
+
     for i in range(n_samples):
         emb[i,:] = w[i,:].dot(We[x[i,:],:]) / np.count_nonzero(w[i,:])
     return emb
