@@ -175,14 +175,22 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
     test_latents = latents[n_train+n_valid:]
 
     train, valid, test = sentiment_data
+
+    print("train data shape:", train.shape)
+    print("train latents shape:", train_latents.size())
     if train_idxes is not None:
-        print(train.shape)
         train = train[train_idxes]
-        print(train.shape)
+        train_latents = train_latents[train_idxes]
+
+        print("train data shape:", train.shape)
+        print("train latents shape:", train_latents.size())
 
     train_data = SentimentData(train, device)
     valid_data = SentimentData(valid, device)
     test_data = SentimentData(test, device)
+
+    assert train_latents.size()[0] == train.shape[0]
+
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
     valid_loader = DataLoader(valid_data, batch_size=32, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=32, shuffle=True)
