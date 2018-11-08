@@ -31,6 +31,27 @@ def get_normal_log_prob(mu, sigma, values):
     log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
     return log_prob
 
+def get_normal_log_prob2(mu, log_sigma, values):
+    """
+    Arguments:
+        mu: a (batch_size, 1, n_features) tensor of the mean of each feature
+        log_sigma: (batch_size, 1, n_features) tensor of the log stdev of each feature
+        values: (batch_size, seq_len, n_features) tensor of the values of the feature
+
+    Returns:
+        A (batch_size,) tensor of the sum of the log probabilities of each sample,
+        assuming each feature is independent and normally-distributed according to
+        the given mu and sigma.
+    """
+    sigma = log_sigma.exp()
+    term1 = torch.log(1. / (sigma * np.sqrt(2. * np.pi)))
+
+    diff = values - mu
+    term2 = diff.pow_(2) / (2. * sigma.pow(2))
+
+    log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
+    return log_prob
+
 def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
     """
     Calculate the log probability of the word data given the latents, using
