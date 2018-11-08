@@ -21,7 +21,7 @@ import numpy as np
 import h5py
 
 import data_loader as loader
-from losses import get_log_prob_matrix
+from losses import get_log_prob_matrix, get_word_log_prob_angular, get_word_log_prob_dot_prod
 from sentiment_model import train_sentiment, eval_sentiment, train_sentiment_for_latents
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator
 from analyze_embeddings import get_closest_words
@@ -79,16 +79,7 @@ def main():
     3. Maximize joint log-probability of generating sentence, audio, and visual features.
     """
 
-    """
-    Load data
-
-    max_segment_len can be varied to compare results?
-
-    Note: loader.load_word_level_features always returns the same split.
-    """
-    MAX_SEGMENT_LEN = args['seq_len']
-    TR_PROPORTION = 2.0/3
-
+    # Load data
     word2ix, word_embeddings, data = load_data()
     train, valid, test = data
 
@@ -99,9 +90,9 @@ def main():
     and after, we should optimize all embeddings at once.
 
     But for sentiment, we should still keep the same train/valid/test split.
-
     """
 
+    # Normalize audio and visual features to [-1, 1], remove unused features.
     train = normalize_data(train)
     valid = normalize_data(valid)
     test = normalize_data(test)
@@ -125,6 +116,9 @@ def main():
     valid_embedding = get_word_embeddings(word_embeddings, weights, valid['text'])
     test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
     combined_embedding = np.concatenate([train_embedding, valid_embedding, test_embedding], axis=0)
+
+    # print closest words before training
+    pre_closest = get_closest_words(combined_embedding, word_embeddings.cpu().numpy(), word2ix)
 
     BATCH_SIZE = args['batch_size']
     # dataset = MMData(train['text'], train['covarep'], train['facet'], device)
@@ -164,6 +158,28 @@ def main():
             sentiment_train_idxes = f[args['semi_sup_idxes']][:]
             print(sentiment_train_idxes.shape)
 
+    # initialize probability function for word embeddings
+    if args['word_sim_metric'] == 'angular':
+        word_log_prob_fn = get_word_log_prob_angular
+    elif args['word_sim_metric'] == 'dot_prod':
+        word_log_prob_fn = get_word_log_prob_dot_prod
+    else:
+        raise NotImplementedError
+
+    a = 1e-3
+
+    def get_word_log_prob(latents, text):
+        word_log_prob = word_log_prob_fn(latents, weights, word_embeddings, text, a)
+        if word_log_prob.min().abs() == np.inf:
+            print('word inf')
+            print(latents.size())
+            print(latents.matmul(word_embeddings.transpose(0, 1)).max())
+            print(latents.matmul(word_embeddings.transpose(0, 1)).exp().max())
+            print(latents)
+            sys.exit()
+
+        return word_log_prob
+
     joint = True
     if joint:
         for i in range(args['n_runs']):
@@ -187,9 +203,6 @@ def main():
                 os.mkdir(post_path)
 
             curr_embedding = torch.tensor(combined_embedding.copy(), device=device, dtype=torch.float32)
-
-            # print closest words before training
-            pre_closest = get_closest_words(curr_embedding.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
 
             print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
             print("Initial sentiment predictions, before optimizing audio and visual")
@@ -229,7 +242,8 @@ def main():
                         print("boot!")
 
                     log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
-                            {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device, verbose=False)
+                            {"text": text, "covarep": aud, "facet": vis}, get_word_log_prob,
+                            device=device, verbose=False)
 
                     avg_log_prob = log_prob.mean()
                     #avg_log_prob.backward(retain_graph=True)

@@ -9,9 +9,10 @@ def load_data():
     # load glove 300d word embeddings
     word_embeddings = loader.load_word_embedding()
     
-    # TODO: save train, valid, test in file so that don't have to
+    # saved train, valid, test in file so that don't have to
     # regenerate each time
-    #train, valid, test = loader.load_word_level_features(max_len, tr_proportion)
+    # Note: loader.load_word_level_features always returns the same split.
+    # train, valid, test = loader.load_word_level_features(max_len, tr_proportion)
 
     with h5py.File('mosi_data.h5', 'r') as f:
         keys = [
@@ -41,13 +42,10 @@ def normalize_data(train):
     # normalize audio and visual features to [-1, 1]
     audio_min = train['covarep'].min((0, 1))
     audio_max = train['covarep'].max((0, 1))
-    # print(audio_max - audio_min)
+    
     audio_diff = audio_max - audio_min
     audio_nonzeros = (audio_diff == 0).nonzero()[0]
-    # print(audio_nonzeros)
     audio_nonzeros = audio_diff.nonzero()[0]
-    # print(train['covarep'].shape)
-    # print(train['covarep'][:, :, audio_nonzeros].shape)
 
     train['covarep'] = train['covarep'][:, :, audio_nonzeros]
 

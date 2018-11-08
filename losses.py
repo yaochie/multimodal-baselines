@@ -108,8 +108,8 @@ def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
-def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, weights, a=1e-3,
-            device=torch.device('cpu'), verbose=False):
+def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
+        device=torch.device('cpu'), verbose=False):
     """
     Return the log probability for the batch data given the
     latent variables, and the derived audio and visual parameters.
@@ -131,12 +131,7 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, wei
     audio_sigma = audio_sigma + epsilon
     visual_sigma = visual_sigma + epsilon
 
-    if args['word_sim_metric'] == 'dot_prod':
-        word_log_prob = get_word_log_prob_dot_prod(latents, weights, word_embeddings, data['text'], a)
-    elif args['word_sim_metric'] == 'angular':
-        word_log_prob = get_word_log_prob_angular(latents, weights, word_embeddings, data['text'], a)
-    else:
-        raise NotImplementedError
+    word_log_prob = word_log_prob_fn(latents, data['text'])
 
     """
     assume samples in sequences are i.i.d.
@@ -159,14 +154,6 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_embeddings, wei
         bad = True
     if visual_log_prob.min().abs() == np.inf:
         print('vis inf')
-        bad = True
-    if word_log_prob.min().abs() == np.inf:
-        print('word inf')
-        print(latents.size())
-        print(latents.matmul(word_embeddings.transpose(0, 1)).max())
-        print(latents.matmul(word_embeddings.transpose(0, 1)).exp().max())
-        print(latents)
-        print(Z_s)
         bad = True
     if bad:
         sys.exit()
