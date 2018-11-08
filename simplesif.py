@@ -227,7 +227,11 @@ def main():
             curr_embedding.requires_grad = True
 
             lr = args['lr']
-            optimizer = optim.SGD([curr_embedding], lr=lr)
+
+            grad_params = [curr_embedding]
+            if not args['freeze_weights']:
+                grad_params.extend(gen_model.parameters())
+            optimizer = optim.SGD(grad_params, lr=lr)
             # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
             N_EPOCHS = args['n_epochs']
