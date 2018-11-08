@@ -143,7 +143,7 @@ def train_sentiment(args, model, train_data, train_latents,
                     if n_bad >= patience:
                         n_bad_trials += 1
                         if n_bad_trials < n_trials:
-                            print("reloading model...")
+                            print("reloading model and decaying learning rate...")
                             checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
                             model.load_state_dict(checkpoint['model_state_dict'])
                             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
