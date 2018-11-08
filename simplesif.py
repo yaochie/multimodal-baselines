@@ -3,6 +3,7 @@ import json
 import time
 import sys
 import argparse
+import pprint
 
 import torch
 import torch.nn as nn
@@ -42,7 +43,12 @@ Hyper-parameters:
 """
 def read_config(config_file):
     # Future work: handle default values?
-    return json.load(open(config_file, 'r'))
+    config = json.load(open(config_file, 'r'))
+
+    pp = pprint.PrettyPrinter(indent=2)
+    pp.pprint(config)
+
+    return config
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -192,7 +198,7 @@ def main():
             if not os.path.isdir(folder):
                 os.makedirs(folder)
 
-            json.dump(args, open(os.path.join(folder, 'config.json'), 'w'))
+            json.dump(args, open(os.path.join(folder, 'config.json'), 'w'), indent=2)
             
             pre_path = os.path.join(folder, 'pre')
             post_path = os.path.join(folder, 'post')
@@ -213,7 +219,8 @@ def main():
             # save initial embeddings
             torch.save(curr_embedding, os.path.join(pre_path, 'embed.bin'))
 
-            gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
+            gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
+                    frozen_weights=args['freeze_weights']).to(device)
 
             print("Training...")
 

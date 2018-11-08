@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 
 import torch
 import torch.nn as nn
@@ -188,10 +189,12 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
 
     print("Initial sentiment predictions")
     senti_model.eval()
-    acc = eval_sentiment(test_loader, senti_model, test_latents)
+    results = eval_sentiment(test_loader, senti_model, test_latents)
     if model_save_path is not None:
         with open(os.path.join(model_save_path, 'test_acc_before.txt'), 'w') as f:
-            f.write(str(acc))
+            f.write(str(results['accuracy']))
+        with open(os.path.join(model_save_path, 'test_results_before.json'), 'w') as f:
+            json.dump(results, f, indent=2)
 
     print("Training sentiment model on sentence embeddings...")
     senti_model.train()
@@ -218,8 +221,11 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
 
     print("Sentiment predictions after training")
     senti_model.eval()
-    acc = eval_sentiment(test_loader, senti_model, test_latents)
+    results = eval_sentiment(test_loader, senti_model, test_latents)
     if model_save_path is not None:
         with open(os.path.join(model_save_path, 'test_acc_after.txt'), 'w') as f:
-            f.write(str(acc))
+            f.write(str(results['accuracy']))
+        with open(os.path.join(model_save_path, 'test_results_after.json'), 'w') as f:
+            json.dump(results, f, indent=2)
+
     print("-----------------------------")

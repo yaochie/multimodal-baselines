@@ -186,11 +186,22 @@ def full_loss(predictions, y_test):
     print("mult_acc: {}".format(mult))
     f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
     print("mult f_score: {}".format(f_score))
+
     true_label = (y_test >= 0)
     predicted_label = (predictions >= 0)
+    accuracy = accuracy_score(true_label, predicted_label)
     print("Confusion Matrix :")
     print(confusion_matrix(true_label, predicted_label))
     print("Classification Report :")
     print(classification_report(true_label, predicted_label, digits=5))
-    print("Accuracy {}".format(accuracy_score(true_label, predicted_label)))
-    return accuracy_score(true_label, predicted_label)
+    print("Accuracy {}".format(accuracy))
+
+    results = {
+        'mae': float(mae),
+        'accuracy': float(accuracy),
+        'corr': float(corr),
+        'mult_acc': float(mult),
+        'f_score': float(f_score)
+    }
+
+    return results
