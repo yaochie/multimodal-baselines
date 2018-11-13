@@ -21,7 +21,6 @@ from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 import h5py
 
-import data_loader as loader
 from losses import get_log_prob_matrix, get_word_log_prob_angular, get_word_log_prob_dot_prod
 from sentiment_model import train_sentiment, eval_sentiment, train_sentiment_for_latents
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator

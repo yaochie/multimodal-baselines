@@ -159,9 +159,12 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
         sys.exit()
 
     if verbose:
-        print("Visual: {}".format(visual_log_prob))
-        print("Audio: {}".format(audio_log_prob))
-        print("Word: {}".format(word_log_prob))
+        print("Visual: {}\tAudio: {}\tWord: {}".format(visual_log_prob.min(),
+            audio_log_prob.min(), word_log_prob.min()))
+
+        # print("Visual: {}".format(visual_log_prob.min()))
+        # print("Audio: {}".format(audio_log_prob.min()))
+        # print("Word: {}".format(word_log_prob.min()))
 
     # final output: one value per datapoint
     if 'word_loss_weight' in args:

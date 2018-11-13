@@ -44,15 +44,24 @@ def estimate_embedding(data, W_mean, b_mean, W_log_sigma, b_log_sigma):
     
     return cs
 
-def calc_weights(data, b_mean, b_log_sigma):
+def calc_weights2(data, b_mean, b_log_sigma):
     b_mean = b_mean.reshape((1, 1, -1))
     b_sigma = np.exp(b_log_sigma).reshape((1, 1, -1))
 
     q_mean = (data - b_mean) / (b_sigma ** 2)
-    q_sigma = (data - b_sigma) ** 2 / (b_sigma ** 3) - 1. / b_sigma
+    q_sigma = (data - b_mean) ** 2 / (b_sigma ** 3) - 1. / b_sigma
     return q_mean, q_sigma
 
-def estimate_embedding_overall(data, audio_networks, visual_networks, weights,
+def calc_weights(data, b_mean, b_log_sigma):
+    b_mean = b_mean.reshape((1, 1, -1))
+    b_log_sigma = b_log_sigma.reshape((1, 1, -1))
+
+    q_mean = (data - b_mean) / (np.exp(2 * b_log_sigma))
+    q_sigma = (data - b_mean) ** 2 / np.exp(2 * b_log_sigma) - 1.
+
+    return q_mean, q_sigma
+
+def estimate_embedding_overall2(data, audio_networks, visual_networks, weights,
         word_embeddings):
     text, audio, visual = data
     audio_mu, audio_log_sigma = audio_networks
@@ -70,19 +79,10 @@ def estimate_embedding_overall(data, audio_networks, visual_networks, weights,
 
     # get weights of text data
     sentence_weights = get_sentence_word_weights(text, weights)
-    # print(q_mean_audio.shape)
-    # print(q_mean_visual.shape)
-    # print(q_mean_audio[0, 0, :5])
-    # print(q_sigma_audio[0, 0, :5])
-    # print(q_sigma_visual[0, 0, :5])
-    # print(sentence_weights.shape)
-    # print(sentence_weights[0, :5])
 
     # get total weight
     total_weight = sentence_weights.sum(-1) + q_mean_audio.sum(-1).sum(-1) + q_sigma_audio.sum(-1).sum(-1)
     total_weight += q_mean_visual.sum(-1).sum(-1) + q_sigma_visual.sum(-1).sum(-1)
-    # print(total_weight.shape)
-    # print(total_weight[:5])
     total_weight = total_weight.reshape((-1, 1, 1))
     
     q_mean_audio_norm = q_mean_audio / total_weight
@@ -93,8 +93,6 @@ def estimate_embedding_overall(data, audio_networks, visual_networks, weights,
 
     n_samples = sentence_weights.shape[0]
     cs = np.zeros((n_samples, 300))
-    print(text.shape)
-    print(sent_weight_norm[0,:].dot(word_embeddings[text[0,:],:]).shape)
 
     for i in range(n_samples):
         word_embeddings[text[i,:],:]
@@ -106,6 +104,53 @@ def estimate_embedding_overall(data, audio_networks, visual_networks, weights,
     cs += np.dot(q_sigma_visual_norm, W_sigma_visual).sum(1)
 
     # normalize to get unit length vector
+    return cs
+
+def estimate_embedding_overall(data, audio_networks, visual_networks, weights,
+        word_embeddings):
+    text, audio, visual = data
+    audio_mu, audio_log_sigma = audio_networks
+    visual_mu, visual_log_sigma = visual_networks
+
+    q_mean_audio, q_sigma_audio = calc_weights(audio, audio_mu.bias.detach().cpu().numpy(),
+            audio_log_sigma.bias.detach().cpu().numpy())
+    q_mean_visual, q_sigma_visual = calc_weights(visual, visual_mu.bias.detach().cpu().numpy(),
+            visual_log_sigma.bias.detach().cpu().numpy())
+
+    W_mean_audio = audio_mu.weight.detach().cpu().numpy()
+    W_log_sigma_audio = audio_log_sigma.weight.detach().cpu().numpy()
+    W_mean_visual = visual_mu.weight.detach().cpu().numpy()
+    W_log_sigma_visual = visual_log_sigma.weight.detach().cpu().numpy()
+
+    # get weights of text data
+    sentence_weights = get_sentence_word_weights(text, weights)
+
+    # get total weight
+    total_weight = sentence_weights.sum(-1) + q_mean_audio.sum(-1).sum(-1) + q_sigma_audio.sum(-1).sum(-1)
+    total_weight += q_mean_visual.sum(-1).sum(-1) + q_sigma_visual.sum(-1).sum(-1)
+    total_weight = total_weight.reshape((-1, 1, 1))
+    
+    q_mean_audio_norm = q_mean_audio / total_weight
+    q_mean_visual_norm = q_mean_visual / total_weight
+    q_sigma_audio_norm = q_sigma_audio / total_weight
+    q_sigma_visual_norm = q_sigma_visual / total_weight
+    sent_weight_norm = sentence_weights / total_weight.reshape((-1, 1))
+
+    n_samples = sentence_weights.shape[0]
+    cs = np.zeros((n_samples, 300))
+
+    for i in range(n_samples):
+        word_embeddings[text[i,:],:]
+        cs[i,:] += sent_weight_norm[i,:].dot(word_embeddings[text[i,:],:])
+
+    cs += np.dot(q_mean_audio_norm, W_mean_audio).sum(1)
+    cs += np.dot(q_sigma_audio_norm, W_log_sigma_audio).sum(1)
+    cs += np.dot(q_mean_visual_norm, W_mean_visual).sum(1)
+    cs += np.dot(q_sigma_visual_norm, W_log_sigma_visual).sum(1)
+
+    # normalize to get unit length vector
+    cs /= np.linalg.norm(cs)
+
     return cs
 
 def estimate_embedding_wrapper(data, linear_layers):
@@ -149,7 +194,7 @@ def optimize_embeddings(args, text_embeddings, data, weight,
 
     args.update({
         'word_sim_metric': 'angular',
-        #'word_loss_weight':
+        'word_loss_weight': 0.01,
     })
     if args['word_sim_metric'] == 'angular':
         word_log_prob_fn = get_word_log_prob_angular
@@ -197,6 +242,7 @@ def optimize_embeddings(args, text_embeddings, data, weight,
                 (network.embed2visual['mu'], network.embed2visual['log_sigma']),
                 weights, word_embeddings)
         estimate = torch.tensor(estimate, dtype=torch.float, device=device)
+        # estimate = estimate / estimate.norm()
 
         # estimate = torch.tensor(weight[0] * text_embeddings +
         #             weight[1] * audio_embeddings +
@@ -211,7 +257,7 @@ def optimize_embeddings(args, text_embeddings, data, weight,
             
             log_prob = -get_log_prob_matrix(args, estimate[j], audio_p, visual_p,
                     {"text": txt, "covarep": aud, "facet": vis}, get_word_log_prob,
-                    device=device, verbose=False)
+                    device=device, verbose=True)
 
             avg_log_prob = log_prob.mean()
             avg_log_prob.backward()
@@ -221,6 +267,8 @@ def optimize_embeddings(args, text_embeddings, data, weight,
 
         train_losses.append(epoch_loss)
         print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+
+        # normalize latents??
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -266,11 +314,11 @@ def main():
     test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
     combined_embedding = np.concatenate([train_embedding, valid_embedding, test_embedding], axis=0)
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 64
     dataset = MMData(train['text'], train['covarep'], train['facet'], device)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    optimize_embeddings(args, train_embedding, (train['text'], train['covarep'], train['facet']), [100000, 1, 1],
+    optimize_embeddings(args, train_embedding, (train['text'], train['covarep'], train['facet']), [1, 1, 1],
             word_embeddings, weights, dataloader, device)
 
 if __name__ == '__main__':

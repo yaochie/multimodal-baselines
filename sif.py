@@ -3,8 +3,6 @@ import os
 
 import numpy as np
 
-#sys.path.append('SIF/src')
-#import SIF_embedding, params, data_io
 from sif_functions import Params, seq2weight, SIF_embedding
 
 """
