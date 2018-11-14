@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score, f1_score
 
 import numpy as np
 
-def get_normal_log_prob(mu, sigma, values):
+def get_normal_log_prob(mu, sigma, values, mask):
     """
     Arguments:
         mu: a (batch_size, 1, n_features) tensor of the mean of each feature
@@ -28,31 +28,11 @@ def get_normal_log_prob(mu, sigma, values):
     diff = values - mu
     term2 = diff.pow(2) / (2. * sig_sq)
 
-    log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
-    return log_prob
+    log_prob = term1 - term2
+    masked_log_prob = log_prob * mask
+    return masked_log_prob.squeeze().sum(-1).sum(-1)
 
-def get_normal_log_prob2(mu, log_sigma, values):
-    """
-    Arguments:
-        mu: a (batch_size, 1, n_features) tensor of the mean of each feature
-        log_sigma: (batch_size, 1, n_features) tensor of the log stdev of each feature
-        values: (batch_size, seq_len, n_features) tensor of the values of the feature
-
-    Returns:
-        A (batch_size,) tensor of the sum of the log probabilities of each sample,
-        assuming each feature is independent and normally-distributed according to
-        the given mu and sigma.
-    """
-    sigma = log_sigma.exp()
-    term1 = torch.log(1. / (sigma * np.sqrt(2. * np.pi)))
-
-    diff = values - mu
-    term2 = diff.pow_(2) / (2. * sigma.pow(2))
-
-    log_prob = (term1 - term2).squeeze().sum(-1).sum(-1)
-    return log_prob
-
-def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
+def get_word_log_prob_angular(latents, weights, word_embeddings, data, mask, a):
     """
     Calculate the log probability of the word data given the latents, using
     the angular distance between the latent embedding and the word embeddings
@@ -77,6 +57,10 @@ def get_word_log_prob_angular(latents, weights, word_embeddings, data, a):
     #context_prob = (1. - alpha) * dot_prod.exp() / Z_s
 
     log_probs = torch.log(unigram_prob + context_prob)
+
+    # mask probabilities of padding words
+    log_probs = log_probs * mask
+
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
@@ -108,7 +92,7 @@ def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
-def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
+def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob_fn,
         device=torch.device('cpu'), verbose=False):
     """
     Return the log probability for the batch data given the
@@ -123,6 +107,8 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
         data: dict containing text, audio and visual features.
             text is a tensor of word ids, covarep is a tensor of audio
             features, facet is a tensor of visual features.
+        masks: a binary tensor indicating whether the loss for this value
+            should be masked (because it is padding)
     """
     epsilon = torch.tensor(1e-6, device=device)
 
@@ -131,7 +117,7 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
     audio_sigma = audio_sigma + epsilon
     visual_sigma = visual_sigma + epsilon
 
-    word_log_prob = word_log_prob_fn(latents, data['text'])
+    word_log_prob = word_log_prob_fn(latents, data['text'], masks['text'])
 
     """
     assume samples in sequences are i.i.d.
@@ -143,10 +129,11 @@ def get_log_prob_matrix(args, latents, audio, visual, data, word_log_prob_fn,
     audio_sigma: (batch, n_features)
     independent normals, so just calculate log prob directly
     """
+
     audio_log_prob = get_normal_log_prob(audio_mu.unsqueeze(1),
-                audio_sigma.unsqueeze(1), data['covarep'])
+                audio_sigma.unsqueeze(1), data['covarep'], masks['covarep'])
     visual_log_prob = get_normal_log_prob(visual_mu.unsqueeze(1),
-                visual_sigma.unsqueeze(1), data['facet'])
+                visual_sigma.unsqueeze(1), data['facet'], masks['facet'])
 
     bad = False
     if audio_log_prob.min().abs() == np.inf:

@@ -29,6 +29,9 @@ from utils import load_data, normalize_data, MMData
 
 from sif import load_weights, get_word_embeddings  
 
+def update_masks(mask_dict, data):
+    mask_dict['text'] = (data != 0).astype(int)
+
 """
 Hyper-parameters:
 - Batch size
@@ -98,9 +101,14 @@ def main():
     """
 
     # Normalize audio and visual features to [-1, 1], remove unused features.
-    train = normalize_data(train)
-    valid = normalize_data(valid)
-    test = normalize_data(test)
+    train, train_mask = normalize_data(train)
+    valid, valid_mask = normalize_data(valid)
+    test, test_mask = normalize_data(test)
+
+    # get mask for text data
+    update_masks(train_mask, train['text'])
+    update_masks(valid_mask, valid['text'])
+    update_masks(test_mask, test['text'])
 
     n_train = train['label'].shape[0]
     n_valid = valid['label'].shape[0]
@@ -110,6 +118,12 @@ def main():
     combined_covarep = np.concatenate([train['covarep'], valid['covarep'], test['covarep']], axis=0)
     combined_facet = np.concatenate([train['facet'], valid['facet'], test['facet']], axis=0)
 
+    combined_masks = {
+        'text': np.concatenate([train_mask['text'], valid_mask['text'], test_mask['text']]),
+        'covarep': np.concatenate([train_mask['covarep'], valid_mask['covarep'], test_mask['covarep']]),
+        'facet': np.concatenate([train_mask['facet'], valid_mask['facet'], test_mask['facet']]),
+    }
+
     weights = load_weights()
     weights = torch.tensor(weights, device=device, dtype=torch.float32)
     word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
@@ -117,6 +131,7 @@ def main():
     if args['word_sim_metric'] == 'dot_prod':
         word_embeddings = F.normalize(word_embeddings)
 
+    # get sentence embeddings
     train_embedding = get_word_embeddings(word_embeddings, weights, train['text'])
     valid_embedding = get_word_embeddings(word_embeddings, weights, valid['text'])
     test_embedding = get_word_embeddings(word_embeddings, weights, test['text'])
@@ -127,8 +142,10 @@ def main():
 
     BATCH_SIZE = args['batch_size']
     # dataset = MMData(train['text'], train['covarep'], train['facet'], device)
-    dataset = MMData(combined_text, combined_covarep, combined_facet, device)
+    dataset = MMData(combined_text, combined_covarep, combined_facet, combined_masks, device)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+
+    print("# batches: {}".format(len(dataset) // BATCH_SIZE))
 
     """
     2. Initialize regression model to generate mean and variance of audio and
@@ -173,8 +190,8 @@ def main():
 
     a = 1e-3
 
-    def get_word_log_prob(latents, text):
-        word_log_prob = word_log_prob_fn(latents, weights, word_embeddings, text, a)
+    def get_word_log_prob(latents, text, mask):
+        word_log_prob = word_log_prob_fn(latents, weights, word_embeddings, text, mask, a)
         if word_log_prob.min().abs() == np.inf:
             print('word inf')
             print(latents.size())
@@ -240,7 +257,7 @@ def main():
                 epoch_loss = 0.
                 iters = 0
                 #curr_embedding = F.normalize(curr_embedding)
-                for j, text, aud, vis in dataloader:
+                for j, text, aud, vis, text_m, aud_m, vis_m in dataloader:
                     iters += 1
                     optimizer.zero_grad()
 
@@ -252,7 +269,9 @@ def main():
                         print("boot!")
 
                     log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
-                            {"text": text, "covarep": aud, "facet": vis}, get_word_log_prob,
+                            {"text": text, "covarep": aud, "facet": vis}, 
+                            {"text": text_m, "covarep": aud_m, "facet": vis_m},
+                            get_word_log_prob,
                             device=device, verbose=False)
 
                     avg_log_prob = log_prob.mean()

@@ -83,7 +83,7 @@ def train_sentiment(args, model, train_data, train_latents,
 
     n_epochs = args['n_sentiment_epochs']
     lr = args['sentiment_lr']
-    patience = 7
+    patience = 10
     n_trials = 3
 
     n_samples = len(train_data.dataset)
