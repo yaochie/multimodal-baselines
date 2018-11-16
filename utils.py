@@ -51,6 +51,8 @@ def normalize_data(train):
 
     train['covarep'] = train['covarep'][:, :, audio_nonzeros]
 
+    audio_pad = train['covarep'] == 0
+    vis_pad = train['facet'] == 0
     audio_mask = (train['covarep'] != 0).astype(int)
     vis_mask = (train['facet'] != 0).astype(int)
 
@@ -65,6 +67,9 @@ def normalize_data(train):
 
     train['covarep'] = (train['covarep'] + audio_min) * 2. / (audio_max - audio_min) - 1.
     train['facet'] = (train['facet'] + vis_min) * 2. / (vis_max - vis_min) - 1.
+
+    train['covarep'][audio_pad] = -10.
+    train['facet'][vis_pad] = -10.
     
     return train, {'covarep': audio_mask, 'facet': vis_mask}
 
