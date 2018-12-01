@@ -31,6 +31,7 @@ def get_normal_log_prob(mu, sigma, values, mask):
     log_prob = term1 - term2
     masked_log_prob = log_prob * mask
     return masked_log_prob.squeeze().sum(-1).sum(-1)
+    #return log_prob.squeeze().sum(-1).sum(-1)
 
 def get_word_log_prob_angular(latents, weights, word_embeddings, data, mask, a):
     """
@@ -64,6 +65,36 @@ def get_word_log_prob_angular(latents, weights, word_embeddings, data, mask, a):
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
+def get_word_log_prob_angular2(latents, word_embeddings, word_weights, sent_embeddings, mask, a):
+    """
+    Calculate the log probability of the word data given the latents, using
+    the angular distance between the latent embedding and the word embeddings
+    of the sentence. Based on Ethayarajh's work.
+    """
+    coss = nn.CosineSimilarity(dim=-1)
+
+    cosine_sims = coss(latents.unsqueeze(1), word_embeddings.unsqueeze(0))
+    angular_dists = cosine_sims.acos()
+    Z_s = (1. - angular_dists / np.pi).sum(-1, keepdim=True)
+    #Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
+    alpha = 1. / (Z_s * a + 1.)
+
+    unigram_prob = alpha * word_weights
+
+    score = 1. - (coss(sent_embeddings, latents.unsqueeze(1)).acos() / np.pi)
+    context_prob = (1. - alpha) * score / Z_s
+    #dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
+    #context_prob = (1. - alpha) * dot_prod.exp() / Z_s
+
+    log_probs = torch.log(unigram_prob + context_prob)
+
+    # mask probabilities of padding words
+    log_probs = log_probs * mask[:,:,0]
+
+    word_log_prob = log_probs.sum(dim=-1)
+    return word_log_prob
+
+
 def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     """
     Arora's original log probability formulation, based on dot product.
@@ -92,6 +123,33 @@ def get_word_log_prob_dot_prod(latents, weights, word_embeddings, data, a):
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
+def get_word_log_prob_dot_prod2(latents, word_embeddings, word_weights, sent_embeddings, mask, a):
+    """
+    Arora's original log probability formulation, based on dot product.
+    ** sensitive to vector norm!
+    exponentiate the sigma
+
+    calculate probabilities for text using Arora model
+    given word weights p(w), a / (a + p(w)) * v(w) . embedding
+
+    use softmax instead 
+    log (alpha * p(w) + (1 - alpha) exp(dotprod) / Z)
+    calc partition value Z - sum of exps of inner products of embedding with all words.
+    """
+    Z_s = latents.matmul(word_embeddings.transpose(0, 1)).exp().sum(-1, keepdim=True)
+    alpha = 1. / (Z_s * a + 1.)
+
+    unigram_prob = alpha * word_weights
+
+    dot_prod = torch.bmm(sent_embeddings, latents.unsqueeze(-1)).squeeze()
+    context_prob = (1. - alpha) * dot_prod.exp() / Z_s
+
+    log_probs = torch.log(unigram_prob + context_prob)
+    log_probs = log_probs * mask[:,:,0]
+
+    word_log_prob = log_probs.sum(dim=-1)
+    return word_log_prob
+
 def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob_fn,
         device=torch.device('cpu'), verbose=False):
     """
@@ -114,8 +172,8 @@ def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob
 
     (audio_mu, audio_sigma) = audio
     (visual_mu, visual_sigma) = visual
-    audio_sigma = audio_sigma + epsilon
-    visual_sigma = visual_sigma + epsilon
+    #audio_sigma = audio_sigma + epsilon
+    #visual_sigma = visual_sigma + epsilon
 
     word_log_prob = word_log_prob_fn(latents, data['text'], masks['text'])
 
@@ -160,6 +218,70 @@ def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob
         total_log_prob = aud_weight * audio_log_prob + vis_weight * visual_log_prob + word_weight * word_log_prob
     else:
         total_log_prob = audio_log_prob + visual_log_prob + word_log_prob
+    # total_log_prob = audio_log_prob + visual_log_prob
+    return total_log_prob
+
+def get_log_prob_matrix_trimodal(args, latents, out, data, masks, word_log_prob_fn,
+        device=torch.device('cpu'), verbose=False):
+    """
+    Return the log probability for the batch data given the
+    latent variables, and the derived audio and visual parameters.
+
+    Also have for multimodal (concatenation). Treat multimodal outputs as gaussian-distributed.
+
+    Returns one log-probability value per example in the batch.
+
+    Arguments:
+        latents: the (joint) latent variables for the batch
+        audio: the audio params for the batch (tuple mu, sigma)
+        visual: the visual params for the batch (tuple mu, sigma)
+        data: dict containing text, audio and visual features.
+            text is a tensor of word ids, covarep is a tensor of audio
+            features, facet is a tensor of visual features.
+        masks: a binary tensor indicating whether the loss for this value
+            should be masked (because it is padding)
+    """
+    word_log_prob = word_log_prob_fn(latents, data['text_weights'], data['text'], masks['text'])
+
+    """
+    assume samples in sequences are i.i.d.
+    calculate probabilities for audio and visual as if
+    sampling from distribution
+
+    audio: (batch, seqlength, n_features)
+    audio_mu: (batch, n_features)
+    audio_sigma: (batch, n_features)
+    independent normals, so just calculate log prob directly
+    """
+
+    log_probs = {}
+
+    for modality, d in out.items():
+        mu = d['mu']
+        sigma = d['sigma']
+
+        log_probs[modality] = get_normal_log_prob(mu.unsqueeze(1),
+                sigma.unsqueeze(1), data[modality], masks[modality])
+
+    bad = False
+    for m, lp in log_probs.items():
+        if lp.min().abs() == np.inf:
+            print(m, 'inf')
+            bad = True
+    if bad:
+        sys.exit()
+
+    if verbose:
+        print("Visual: {}\tAudio: {}\tWord: {}".format(visual_log_prob.min(),
+            audio_log_prob.min(), word_log_prob.min()))
+
+    # final output: one value per datapoint
+    if 'word_loss_weight' in args:
+        word_weight = args['word_loss_weight']
+        other_weight = (1. - word_weight) / len(log_probs)
+        total_log_prob = sum(log_probs.values()) * other_weight + word_weight * word_log_prob
+    else:
+        total_log_prob = sum(log_probs.values()) + word_log_prob
     # total_log_prob = audio_log_prob + visual_log_prob
     return total_log_prob
 

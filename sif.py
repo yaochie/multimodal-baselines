@@ -31,7 +31,27 @@ def get_word_weights(word_freq_file, a=1e-3):
 
     return word_weights
 
-def load_weights():
+def load_weights(args):
+    if args['dataset'] == 'mosi':
+        return load_mosi_weights()
+    elif args['dataset'] == 'pom':
+        return load_pom_weights()
+    elif args['dataset'] == 'iemocap':
+        return load_iemocap_weights()
+    else:
+        raise NotImplementedError
+
+def load_pom_weights():
+    weights = np.load('pom/pom_word_weights.npy').squeeze()
+    print(weights.shape)
+    return weights
+
+def load_iemocap_weights():
+    weights = np.load('iemocap/iemocap_word_weights.npy').squeeze()
+    print(weights.shape)
+    return weights
+
+def load_mosi_weights():
     if os.path.isfile('word_weights.npy'):
         weights = np.load('word_weights.npy', allow_pickle=False).squeeze()
     else:
@@ -61,7 +81,7 @@ def get_sentence_word_weights(text, weights):
     """
     return seq2weight(text, np.ones(text.shape), weights)
 
-def get_word_embeddings(word_embeddings, weights, text):
+def get_sentence_embeddings(word_embeddings, weights, text):
     text_w = get_sentence_word_weights(text, weights)
 
     # number of principal components to remove
