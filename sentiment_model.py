@@ -27,11 +27,11 @@ class SentimentData(Dataset):
         return idx, self.sentiment[idx]
 
 class SentimentModel(nn.Module):
-    def __init__(self, embedding_dim, hidden_dim):
+    def __init__(self, embedding_dim, hidden_dim, n_out):
         super(SentimentModel, self).__init__()
 
         self.hidden1 = nn.Linear(embedding_dim, hidden_dim)
-        self.out = nn.Linear(hidden_dim, 1)
+        self.out = nn.Linear(hidden_dim, n_out)
 
     def forward(self, inputs):
         x = F.relu(self.hidden1(inputs))
@@ -143,10 +143,12 @@ def train_sentiment(args, model, train_data, train_latents,
                     if n_bad >= patience:
                         n_bad_trials += 1
                         if n_bad_trials < n_trials:
-                            print("reloading model and decaying learning rate...")
-                            checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
-                            model.load_state_dict(checkpoint['model_state_dict'])
-                            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+                            if model_save_path is not None:
+                                print("reloading model and decaying learning rate...")
+                                checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
+                                model.load_state_dict(checkpoint['model_state_dict'])
+                                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
                             # decay learning rate
                             lr = lr * args['lr_decay']
@@ -160,21 +162,27 @@ def train_sentiment(args, model, train_data, train_latents,
     print("Epoch {}: {}".format(i, epoch_loss / n_samples))
     return train_losses, valid_losses
 
-def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
+def train_sentiment_for_latents(args, latents, sentiment_data, device,
             verbose=False, model_save_path=None, train_idxes=None):
 
-    (n_train, n_valid, n_test) = counts
+    train_latents, valid_latents, test_latents = latents
+    # (n_train, n_valid, n_test) = counts
     hidden_dim = args['sentiment_hidden_size']
 
-    embedding_dim = latents.size()[-1]
-    senti_model = SentimentModel(embedding_dim, hidden_dim).to(device)
+    embedding_dim = train_latents.size()[-1]
 
     # prepare data
-    train_latents = latents[:n_train]
-    valid_latents = latents[n_train:n_train+n_valid]
-    test_latents = latents[n_train+n_valid:]
+    #train_latents = latents[:n_train]
+    #valid_latents = latents[n_train:n_train+n_valid]
+    #test_latents = latents[n_train+n_valid:]
 
     train, valid, test = sentiment_data
+
+    if train.ndim == 1:
+        n_out = 1
+    else:
+        n_out = train.shape[-1]
+    senti_model = SentimentModel(embedding_dim, hidden_dim, n_out).to(device)
 
     print("train data shape:", train.shape)
     print("train latents shape:", train_latents.size())
@@ -211,12 +219,13 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device, counts,
             valid_loader, valid_latents, model_loader,
             verbose=verbose, model_save_path=model_save_path)
 
-    with open(os.path.join(model_save_path, 'senti_train_loss.txt'), 'w') as f:
-        for loss in train_losses:
-            f.write('{}\n'.format(loss))
-    with open(os.path.join(model_save_path, 'senti_valid_loss.txt'), 'w') as f:
-        for loss in valid_losses:
-            f.write('{}\n'.format(loss))
+    if model_save_path is not None:
+        with open(os.path.join(model_save_path, 'senti_train_loss.txt'), 'w') as f:
+            for loss in train_losses:
+                f.write('{}\n'.format(loss))
+        with open(os.path.join(model_save_path, 'senti_valid_loss.txt'), 'w') as f:
+            for loss in valid_losses:
+                f.write('{}\n'.format(loss))
 
     if not args['early_stopping']:
         if model_save_path is not None:

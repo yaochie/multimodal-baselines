@@ -290,7 +290,10 @@ def full_loss(predictions, y_test):
     predictions and y_test should be numpy matrices
     """
 
-    predictions = predictions.reshape((len(y_test),))
+    predictions = predictions.flatten()
+    y_test = y_test.flatten()
+    #predictions = predictions.reshape((len(y_test),))
+
     mae = np.mean(np.absolute(predictions-y_test))
     print("mae: {}".format(mae))
     corr = np.corrcoef(predictions,y_test)[0][1]

@@ -47,6 +47,96 @@ def update_masks_vect(mask_dict, data, key='text'):
 def optimize_mosi():
     pass
 
+def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epochs, lr, word_prob_fn,
+        device):
+    embeddings = torch.tensor(embed_arr.copy(), device=device, dtype=torch.float32)
+    embeddings.requires_grad = True
+
+    grad_params = [embeddings]
+    if train and not args['freeze_weights']:
+        grad_params.extend(gen_model.parameters())
+
+    optimizer = optim.SGD(grad_params, lr=lr)
+
+    valid_niter = 10
+    start_time = time.time()
+    losses = []
+    for i in range(n_epochs):
+        epoch_loss = 0.
+        iters = 0
+
+        # normalize embeddings after every epoch? for dot_prod loss
+        for x in dataloader:
+            if args['dataset'] == 'mosi':
+                j, text, aud, vis, text_m, aud_m, vis_m, text_w = x
+            else:
+                j, text, aud, vis, text_m, aud_m, vis_m, text_w, text_a, text_a_m = x
+
+            iters += 1
+            optimizer.zero_grad()
+            out = gen_model(embeddings[j])
+
+            for modality, d in out.items():
+                if d['sigma'].min().abs() < 1e-7:
+                    print(d, "boo!")
+
+            if args['dataset'] == 'mosi':
+                text_gauss = text
+                text_gauss_m = text_m
+            else:
+                text_gauss = text_a
+                text_gauss_m = text_a_m
+
+            batch_data = {
+                'text': text,
+                'audio': aud,
+                'visual': vis,
+                'text_weights': text_w,
+                'audiovisual': torch.cat([aud, vis], dim=-1),
+                'textaudio': torch.cat([text_gauss, aud], dim=-1),
+                'textvisual': torch.cat([text_gauss, vis], dim=-1),
+                'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
+            }
+
+            batch_masks = {
+                'text': text_m,
+                'audio': aud_m,
+                'visual': vis_m,
+                'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
+                'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
+                'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
+                'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
+            }
+
+            # TODO: check that mask and data are same size
+
+            log_prob = -get_log_prob_matrix_trimodal(args, embeddings[j], out,
+                    batch_data, batch_masks, word_prob_fn,
+                    device=device, verbose=False)
+
+            # log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
+            #         {"text": text, "covarep": aud, "facet": vis}, 
+            #         {"text": text_m, "covarep": aud_m, "facet": vis_m},
+            #         get_word_log_prob,
+            #         device=device, verbose=False)
+
+            avg_log_prob = log_prob.mean()
+            avg_log_prob.backward()
+
+            # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
+
+            optimizer.step()
+            epoch_loss += avg_log_prob
+
+        losses.append(epoch_loss)
+        if i % valid_niter == 0:
+            print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+
+    print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+    embeddings.requires_grad = False
+    return embeddings, losses
+
+
 
 """
 Hyper-parameters:
@@ -226,11 +316,16 @@ def main():
     if args['dataset'] == 'mosi':
         train_dataset = MMData(train['text'], train['covarep'], train['facet'], train_mask,
                 train['text_weights'], device)
+        test_dataset = MMData(test['text'], test['covarep'], test['facet'], test_mask,
+                test['text_weights'], device)
     else:
         train_dataset = MMDataExtra(train['text'], train['covarep'], train['facet'], train_mask,
                 train['text_weights'], train['text_align'], device)
+        test_dataset = MMDataExtra(test['text'], test['covarep'], test['facet'], test_mask,
+                test['text_weights'], test['text_align'], device)
 
     dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 
     print("# batches: {}".format(len(train_dataset) // BATCH_SIZE))
 
@@ -355,103 +450,33 @@ def main():
             # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
 
             N_EPOCHS = args['n_epochs']
-            start_time = time.time()
-            train_losses = []
-            for i in range(N_EPOCHS):
-                epoch_loss = 0.
-                iters = 0
-                #curr_embedding = F.normalize(curr_embedding)
-                #for j, text, aud, vis, text_m, aud_m, vis_m, text_w in dataloader:
-                for x in dataloader:
-                    if args['dataset'] == 'mosi':
-                        j, text, aud, vis, text_m, aud_m, vis_m, text_w = x
-                    else:
-                        j, text, aud, vis, text_m, aud_m, vis_m, text_w, text_a, text_a_m = x
+            # N_EPOCHS = 10
 
-                    iters += 1
-                    optimizer.zero_grad()
-
-                    #audio, visual = gen_model(curr_embedding[j])
-                    out = gen_model(curr_embedding[j])
-
-                    for modality, d in out.items():
-                        if d['sigma'].min().abs() < 1e-7:
-                            print(d, "boo!")
-
-                    if args['dataset'] == 'mosi':
-                        text_gauss = text
-                        text_gauss_m = text_m
-                    else:
-                        text_gauss = text_a
-                        text_gauss_m = text_a_m
-
-                    batch_data = {
-                        'text': text,
-                        'audio': aud,
-                        'visual': vis,
-                        'text_weights': text_w,
-                        'audiovisual': torch.cat([aud, vis], dim=-1),
-                        'textaudio': torch.cat([text_gauss, aud], dim=-1),
-                        'textvisual': torch.cat([text_gauss, vis], dim=-1),
-                        'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
-                    }
-
-                    batch_masks = {
-                        'text': text_m,
-                        'audio': aud_m,
-                        'visual': vis_m,
-                        'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
-                        'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
-                        'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
-                        'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
-                    }
-
-                    # TODO: check that mask and data are same size
-
-                    log_prob = -get_log_prob_matrix_trimodal(args, curr_embedding[j], out,
-                            batch_data, batch_masks,
-                            get_word_log_prob2,
-                            device=device, verbose=False)
-
-                    # TODO: write loops for validation and test latent optimization
-
-                    # log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
-                    #         {"text": text, "covarep": aud, "facet": vis}, 
-                    #         {"text": text_m, "covarep": aud_m, "facet": vis_m},
-                    #         get_word_log_prob,
-                    #         device=device, verbose=False)
-
-                    avg_log_prob = log_prob.mean()
-                    #avg_log_prob.backward(retain_graph=True)
-                    avg_log_prob.backward()
-
-                    # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
-
-                    optimizer.step()
-                    epoch_loss += avg_log_prob
-                # scheduler.step()
-                train_losses.append(epoch_loss)
-                if i % valid_niter == 0:
-                    print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
-            print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
-            curr_embedding.requires_grad = False
+            train_embed, train_losses = optimize_latents(args, True, gen_model, train_embedding,
+                    dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
 
             with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
                 for loss in train_losses:
                     f.write('{}\n'.format(loss))
+            curr_embedding = train_embed
             torch.save(curr_embedding, os.path.join(post_path, 'embed.bin'))
 
             if word2ix is not None:
-                post_closest = get_closest_words(curr_embedding.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
+                post_closest = get_closest_words(train_embed.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
 
             with open(os.path.join(folder, 'closest_words.txt'), 'w') as f:
                 for pre, post in zip(pre_closest, post_closest):
                     f.write('{}\t{}\n'.format(' '.join(pre), ' '.join(post)))
 
+            # TODO: get test embeddings
+            test_embed, test_losses = optimize_latents(args, False, gen_model, test_embedding,
+                    test_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
+
             print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
             print("Initial sentiment predictions, AFTER optimizing audio and visual")
-            train_sentiment_for_latents(args, curr_embedding, sentiment_data, device,
-                    (n_train, n_valid, n_test), train_idxes=sentiment_train_idxes,
+            latents = (train_embed, test_embed, test_embed)
+            train_sentiment_for_latents(args, latents, sentiment_data, device,
+                    train_idxes=sentiment_train_idxes,
                     model_save_path=post_path)
     else:
         raise NotImplementedError
