@@ -74,7 +74,18 @@ def load_pom():
 
     print(train['text'].shape)
 
-    # TODO: we want the ids in 'text' instead of the actual embeddings
+    # since pom is very long, we might need to
+    # truncate so that we don't run out of memory
+    MAXLEN = 2000
+    # print("truncating ids to", MAXLEN)
+    
+    x = np.load('pom/pom_train_ids.npy', allow_pickle=False)
+    print(x.shape)
+    train['text_id'] = x
+    x = np.load('pom/pom_valid_ids.npy', allow_pickle=False)
+    valid['text_id'] = x
+    x = np.load('pom/pom_test_ids.npy', allow_pickle=False)
+    test['text_id'] = x
 
     return word2ix, word_embeddings, (train, valid, test)
 

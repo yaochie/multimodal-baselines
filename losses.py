@@ -307,9 +307,11 @@ def full_loss(predictions, y_test):
     predicted_label = (predictions >= 0)
     accuracy = accuracy_score(true_label, predicted_label)
     print("Confusion Matrix :")
-    print(confusion_matrix(true_label, predicted_label))
+    confusion_mat = confusion_matrix(true_label, predicted_label)
+    print(confusion_mat)
     print("Classification Report :")
     print(classification_report(true_label, predicted_label, digits=5))
+    class_report = classification_report(true_label, predicted_label, digits=5, output_dict=True)
     print("Accuracy {}".format(accuracy))
 
     results = {
@@ -317,7 +319,61 @@ def full_loss(predictions, y_test):
         'accuracy': float(accuracy),
         'corr': float(corr),
         'mult_acc': float(mult),
-        'f_score': float(f_score)
+        'f_score': float(f_score),
+        'confusion_matrix': confusion_mat.tolist(),
+        'class_report': class_report,
     }
 
     return results
+
+def iemocap_loss(predictions, y_test):
+    all_true_label = np.argmax(y_test,axis=1)
+    all_predicted_label = np.argmax(predictions,axis=1)
+
+    f_score = f1_score(all_true_label, all_predicted_label, average='weighted')
+    print("F1 score:", f_score)
+    accuracy = accuracy_score(all_true_label, all_predicted_label)
+    print("Accuracy:", accuracy)
+
+    print("Confusion Matrix :")
+    confusion_mat = confusion_matrix(all_true_label, all_predicted_label)
+    print(confusion_mat)
+    print("Classification Report :")
+    print(classification_report(all_true_label, all_predicted_label, digits=5))
+    class_report = classification_report(all_true_label, all_predicted_label, digits=5, output_dict=True)
+
+    results = {
+        'accuracy': float(accuracy),
+        'f_score': float(f_score),
+        'confusion_matrix': confusion_mat.tolist(),
+        'class_report': class_report,
+    }
+
+    return results
+
+def pom_loss(predictions, y_test):
+    mae = np.mean(np.absolute(predictions-y_test),axis=0)
+    print("mae?", mae)
+    mae = [round(a, 3) for a in mae]
+    print("mae:", mae)
+
+    corr = [round(np.corrcoef(predictions[:,i],y_test[:,i])[0][1],3) for i in range(y_test.shape[1])]
+    print("corr:", corr)
+    mult = [round(sum(np.round(predictions[:,i])==np.round(y_test[:,i]))/float(len(y_test)),3) for i in range(y_test.shape[1])]
+    print('mult_acc:', mult)
+
+    f_score = [
+        round(f1_score(np.round(predictions[:,i]),np.round(y_test[:,i]),average='weighted'),5)
+        for i in range(y_test.shape[1])
+    ]
+    print('f_score:', f_score)
+
+    results = {
+        'mae': [float(x) for x in mae],
+        'corr': [float(x) for x in corr],
+        'mult_acc': [float(x) for x in mult],
+        'f_score': [float(x) for x in f_score],
+    }
+
+    return results
+

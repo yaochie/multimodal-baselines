@@ -23,7 +23,7 @@ import h5py
 
 from losses import get_log_prob_matrix, get_word_log_prob_angular, get_word_log_prob_dot_prod
 from losses import get_log_prob_matrix_trimodal, get_word_log_prob_angular2
-from sentiment_model import train_sentiment, eval_sentiment, train_sentiment_for_latents
+from sentiment_model import train_sentiment, train_sentiment_for_latents
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator, AudioVisualGeneratorMultimodal
 from analyze_embeddings import get_closest_words
 from utils import load_data, normalize_data, MMData, MMDataExtra
@@ -48,7 +48,7 @@ def optimize_mosi():
     pass
 
 def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epochs, lr, word_prob_fn,
-        device):
+        device, validation_data=None, verbose=True):
     embeddings = torch.tensor(embed_arr.copy(), device=device, dtype=torch.float32)
     embeddings.requires_grad = True
 
@@ -126,13 +126,21 @@ def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epoc
             # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
 
             optimizer.step()
-            epoch_loss += avg_log_prob
+            epoch_loss += float(avg_log_prob)
 
         losses.append(epoch_loss)
         if i % valid_niter == 0:
-            print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+            if verbose:
+                print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
 
-    print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+            if validation_data is not None and i % (valid_niter * 8) == 0:
+                valid_embedding, valid_dataloader = validation_data
+                _, valid_losses = optimize_latents(args, False, gen_model, valid_embedding,
+                        valid_dataloader, n_epochs, lr, word_prob_fn, device, verbose=False)
+                print("Mean validation loss:", np.mean(valid_losses))
+
+    if verbose:
+        print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
     embeddings.requires_grad = False
     return embeddings, losses
 
@@ -261,6 +269,14 @@ def main():
         test['text'] = word_embeddings[test['text_id']]
         test['text_weights'] = weights[test['text_id']]
     else:
+        print(train['text_id'].shape)
+        print(train['text'].shape)
+        print(train['covarep'].shape)
+        print(train['facet'].shape)
+        print('----')
+
+        print(valid['text_id'].shape)
+        print(test['text_id'].shape)
         train['text_align'] = train['text']
         train['text'] = word_embeddings[train['text_id']]
         train['text_weights'] = weights[train['text_id']]
@@ -271,9 +287,6 @@ def main():
         test['text'] = word_embeddings[test['text_id']]
         test['text_weights'] = weights[test['text_id']]
 
-        print(train['text'].shape)
-        print(valid['text'].shape)
-        print(test['text'].shape)
         update_masks_vect(train_mask, train['text_align'], 'text_align')
         update_masks_vect(valid_mask, valid['text_align'], 'text_align')
         update_masks_vect(test_mask, test['text_align'], 'text_align')
@@ -310,22 +323,25 @@ def main():
         pre_closest = get_closest_words(combined_embedding, word_embeddings.cpu().numpy(), word2ix)
 
     BATCH_SIZE = args['batch_size']
-    # dataset = MMData(train['text'], train['covarep'], train['facet'], device)
-    #dataset = MMData(combined_text, combined_covarep, combined_facet, combined_masks, device)
-    #dataset = MMData(combined_text, combined_covarep, combined_facet, combined_masks, combined_text_weights, device)
+    # dataset = MMData(combined_text, combined_covarep, combined_facet, combined_masks, combined_text_weights, device)
     if args['dataset'] == 'mosi':
         train_dataset = MMData(train['text'], train['covarep'], train['facet'], train_mask,
                 train['text_weights'], device)
+        valid_dataset = MMData(valid['text'], valid['covarep'], valid['facet'], valid_mask,
+                valid['text_weights'], device)
         test_dataset = MMData(test['text'], test['covarep'], test['facet'], test_mask,
                 test['text_weights'], device)
     else:
         train_dataset = MMDataExtra(train['text'], train['covarep'], train['facet'], train_mask,
                 train['text_weights'], train['text_align'], device)
+        valid_dataset = MMDataExtra(valid['text'], valid['covarep'], valid['facet'], valid_mask,
+                valid['text_weights'], valid['text_align'], device)
         test_dataset = MMDataExtra(test['text'], test['covarep'], test['facet'], test_mask,
                 test['text_weights'], test['text_align'], device)
 
     dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=BATCH_SIZE * 8)
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE * 8)
 
     print("# batches: {}".format(len(train_dataset) // BATCH_SIZE))
 
@@ -420,7 +436,7 @@ def main():
                 os.mkdir(post_path)
 
             #curr_embedding = torch.tensor(combined_embedding.copy(), device=device, dtype=torch.float32)
-            curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+            # curr_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
 
             # print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
             # print("Initial sentiment predictions, before optimizing audio and visual")
@@ -429,7 +445,8 @@ def main():
             #         model_save_path=pre_path)
 
             # save initial embeddings
-            torch.save(curr_embedding, os.path.join(pre_path, 'embed.bin'))
+            torch.save(torch.tensor(combined_embedding.copy(), device=device, dtype=torch.float32),
+                    os.path.join(pre_path, 'embed.bin'))
 
             #gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
             #        frozen_weights=args['freeze_weights']).to(device)
@@ -439,27 +456,18 @@ def main():
 
             print("Training...")
 
-            curr_embedding.requires_grad = True
-
             lr = args['lr']
 
-            grad_params = [curr_embedding]
-            if not args['freeze_weights']:
-                grad_params.extend(gen_model.parameters())
-            optimizer = optim.SGD(grad_params, lr=lr)
-            # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
-
             N_EPOCHS = args['n_epochs']
-            # N_EPOCHS = 10
+            N_EPOCHS = 10
 
             train_embed, train_losses = optimize_latents(args, True, gen_model, train_embedding,
-                    dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
+                    dataloader, N_EPOCHS, lr, get_word_log_prob2, device,
+                    validation_data=(valid_embedding, valid_dataloader))
 
             with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
                 for loss in train_losses:
                     f.write('{}\n'.format(loss))
-            curr_embedding = train_embed
-            torch.save(curr_embedding, os.path.join(post_path, 'embed.bin'))
 
             if word2ix is not None:
                 post_closest = get_closest_words(train_embed.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
@@ -468,13 +476,17 @@ def main():
                 for pre, post in zip(pre_closest, post_closest):
                     f.write('{}\t{}\n'.format(' '.join(pre), ' '.join(post)))
 
-            # TODO: get test embeddings
+            valid_embed, _ = optimize_latents(args, False, gen_model, valid_embedding,
+                    valid_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
             test_embed, test_losses = optimize_latents(args, False, gen_model, test_embedding,
                     test_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
 
+            torch.save(torch.cat([train_embed, valid_embed, test_embed], dim=0),
+                    os.path.join(post_path, 'embed.bin'))
+
             print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
             print("Initial sentiment predictions, AFTER optimizing audio and visual")
-            latents = (train_embed, test_embed, test_embed)
+            latents = (train_embed, valid_embed, test_embed)
             train_sentiment_for_latents(args, latents, sentiment_data, device,
                     train_idxes=sentiment_train_idxes,
                     model_save_path=post_path)

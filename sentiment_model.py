@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from losses import (get_normal_log_prob, get_word_log_prob_angular,
-        get_word_log_prob_dot_prod, full_loss)
+        get_word_log_prob_dot_prod, full_loss, iemocap_loss, pom_loss)
 
 class SentimentData(Dataset):
     def __init__(self, sentiment, device):
@@ -49,7 +49,7 @@ def load_sentiment(path, embedding_dim, hidden_dim, device):
     model = model.to(device)
     return model
 
-def eval_sentiment(data, model, latents):
+def predict_sentiment(data, model, latents):
     n_samples = len(data.dataset)
     loss_function = nn.L1Loss(reduce=False)
     total_loss = 0
@@ -70,8 +70,8 @@ def eval_sentiment(data, model, latents):
 
     y_test = torch.cat(y_test).cpu().numpy()
     predictions = torch.cat(predictions).cpu().numpy()
-    # print(y_test.size())
-    return full_loss(predictions, y_test)
+
+    return predictions, y_test
 
 def train_sentiment(args, model, train_data, train_latents,
             valid_data, valid_latents, model_loader, valid_niter=10,
@@ -205,10 +205,18 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
 
     print("Initial sentiment predictions")
     senti_model.eval()
-    results = eval_sentiment(test_loader, senti_model, test_latents)
+    predictions, y_test = predict_sentiment(test_loader, senti_model, test_latents)
+    if args['dataset'] == 'mosi':
+        results = full_loss(predictions, y_test)
+    elif args['dataset'] == 'iemocap':
+        results = iemocap_loss(predictions, y_test)
+    else:
+        results = pom_loss(predictions, y_test)
+
     if model_save_path is not None:
-        with open(os.path.join(model_save_path, 'test_acc_before.txt'), 'w') as f:
-            f.write(str(results['accuracy']))
+        if 'accuracy' in results:
+            with open(os.path.join(model_save_path, 'test_acc_before.txt'), 'w') as f:
+                f.write(str(results['accuracy']))
         with open(os.path.join(model_save_path, 'test_results_before.json'), 'w') as f:
             json.dump(results, f, indent=2)
 
@@ -238,10 +246,18 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
 
     print("Sentiment predictions after training")
     senti_model.eval()
-    results = eval_sentiment(test_loader, senti_model, test_latents)
+    predictions, y_test = predict_sentiment(test_loader, senti_model, test_latents)
+    if args['dataset'] == 'mosi':
+        results = full_loss(predictions, y_test)
+    elif args['dataset'] == 'iemocap':
+        results = iemocap_loss(predictions, y_test)
+    else:
+        results = pom_loss(predictions, y_test)
+
     if model_save_path is not None:
-        with open(os.path.join(model_save_path, 'test_acc_after.txt'), 'w') as f:
-            f.write(str(results['accuracy']))
+        if 'accuracy' in results:
+            with open(os.path.join(model_save_path, 'test_acc_after.txt'), 'w') as f:
+                f.write(str(results['accuracy']))
         with open(os.path.join(model_save_path, 'test_results_after.json'), 'w') as f:
             json.dump(results, f, indent=2)
 
