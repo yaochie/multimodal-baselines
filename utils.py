@@ -101,7 +101,7 @@ def load_iemocap(args):
 
     fname = 'data/iemocap_{}.h5'.format(args['emotion'])
 
-    with h5py.File('data/iemocap_happy.h5', 'r') as f:
+    with h5py.File(fname, 'r') as f:
         print(list(f['train'].keys()))
         keys = [
             'facet',

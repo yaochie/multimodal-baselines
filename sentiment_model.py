@@ -240,7 +240,7 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
             save_sentiment(model_save_path, senti_model)
     else:
         print('reloading best')
-        model = SentimentModel(embedding_dim, hidden_dim).to(device)
+        model = SentimentModel(embedding_dim, hidden_dim, n_out).to(device)
         checkpoint = torch.load(os.path.join(model_save_path, 'senti.bin'))
         model.load_state_dict(checkpoint['model_state_dict'])
 

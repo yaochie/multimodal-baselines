@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -23,7 +23,8 @@ import h5py
 
 from losses import get_log_prob_matrix, get_word_log_prob_angular, get_word_log_prob_dot_prod
 from losses import get_log_prob_matrix_trimodal, get_word_log_prob_angular2
-from sentiment_model import train_sentiment, train_sentiment_for_latents
+from sentiment_model import train_sentiment, train_sentiment_for_latents, SentimentData
+from sentiment_model import SentimentModel
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator, AudioVisualGeneratorMultimodal
 from analyze_embeddings import get_closest_words
 from utils import load_data, normalize_data, MMData, MMDataExtra, add_positional_embeddings
@@ -43,10 +44,6 @@ def update_masks_vect(mask_dict, data, key='text'):
 
     mask_dict[key] = np.broadcast_to(np.expand_dims(tmp2, -1), data.shape)
 
-
-def optimize_mosi():
-    pass
-
 def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epochs, lr, word_prob_fn,
         device, validation_data=None, verbose=True):
     embeddings = torch.tensor(embed_arr.copy(), device=device, dtype=torch.float32)
@@ -61,6 +58,7 @@ def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epoc
     valid_niter = 10
     start_time = time.time()
     losses = []
+    all_valid_losses = []
     for i in range(n_epochs):
         epoch_loss = 0.
         iters = 0
@@ -137,12 +135,19 @@ def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epoc
                 valid_embedding, valid_dataloader = validation_data
                 _, valid_losses = optimize_latents(args, False, gen_model, valid_embedding,
                         valid_dataloader, n_epochs, lr, word_prob_fn, device, verbose=False)
-                print("Mean validation loss:", np.mean(valid_losses))
+                print("Validation loss:", valid_losses[-1])
+                all_valid_losses.append(valid_losses[-1])
 
-    if verbose:
-        print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+    # Final validation
+    if validation_data is not None:
+        valid_embedding, valid_dataloader = validation_data
+        _, valid_losses = optimize_latents(args, False, gen_model, valid_embedding,
+                valid_dataloader, n_epochs, lr, word_prob_fn, device, verbose=False)
+        print("(Final) Validation loss:", valid_losses[-1])
+        all_valid_losses.append(valid_losses[-1])
+
     embeddings.requires_grad = False
-    return embeddings, losses
+    return embeddings, (losses, all_valid_losses)
 
 
 
@@ -170,7 +175,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('dataset', choices=['mosi', 'pom', 'iemocap'])
-    parser.add_argument('--pos_embed_dim', type=int, default=2)
+    #parser.add_argument('--pos_embed_dim', type=int, default=2)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
@@ -180,6 +185,8 @@ def parse_arguments():
     parser.add_argument('--early_stopping', action='store_true')
     parser.add_argument('--sentiment_epochs', type=int)
     parser.add_argument('--emotion', choices=['happy', 'angry', 'neutral', 'sad'], help='iemocap emotion')
+    #parser.add_argument('--likelihood_weight', type=float, default=0.001)
+    #parser.add_argument('--e2e', action='store_true')
 
     args = vars(parser.parse_args())
     config = read_config(args['config_file'])
@@ -434,8 +441,6 @@ def main():
 
     SENTIMENT_HIDDEN_DIM = args['sentiment_hidden_size']
 
-    valid_niter = 10
-
     sentiment_data = (train['label'], valid['label'], test['label'])
     sentiment_train_idxes = None
     if args['semi_sup_idxes'] is not None:
@@ -478,8 +483,8 @@ def main():
         return word_log_prob
 
 
-    joint = True
-    if joint:
+    e2e = args['e2e']
+    if not e2e:
         for i in range(args['n_runs']):
             if args['config_name']:
                 config_name = args['config_name']
@@ -524,14 +529,16 @@ def main():
             lr = args['lr']
 
             N_EPOCHS = args['n_epochs']
-            N_EPOCHS = 10
 
-            train_embed, train_losses = optimize_latents(args, True, gen_model, train_embedding,
+            train_embed, (train_losses, valid_losses) = optimize_latents(args, True, gen_model, train_embedding,
                     dataloader, N_EPOCHS, lr, get_word_log_prob2, device,
                     validation_data=(valid_embedding, valid_dataloader))
 
             with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
                 for loss in train_losses:
+                    f.write('{}\n'.format(loss))
+            with open(os.path.join(folder, 'embed_valid_loss.txt'), 'w') as f:
+                for loss in valid_losses:
                     f.write('{}\n'.format(loss))
 
             if word2ix is not None:
@@ -547,6 +554,10 @@ def main():
             test_embed, test_losses = optimize_latents(args, False, gen_model, test_embedding,
                     test_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
 
+            with open(os.path.join(folder, 'embed_test_loss.txt'), 'w') as f:
+                for loss in test_losses:
+                    f.write('{}\n'.format(loss))
+
             torch.save(torch.cat([train_embed, valid_embed, test_embed], dim=0),
                     os.path.join(post_path, 'embed.bin'))
 
@@ -557,86 +568,183 @@ def main():
                     train_idxes=sentiment_train_idxes,
                     model_save_path=post_path)
     else:
-        raise NotImplementedError
+        # end-to-end training of latents
+        print("end-to-end training of latents")
 
-#         # sentiment analysis
-#         AUDIO_EMBEDDING_DIM = 20
-#         VISUAL_EMBEDDING_DIM = 20
-# 
-#         gen_model = AudioVisualGeneratorConcat(AUDIO_EMBEDDING_DIM, VISUAL_EMBEDDING_DIM, AUDIO_DIM,
-#                         VISUAL_DIM, frozen_weights=True).to(device)
-#         text_embedding = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
-# 
-#         curr_embedding = gen_model.init_embeddings(text_embedding)
-# 
-#         print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-#         print("Initial sentiment predictions, before optimizing audio and visual")
-#         train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device)
-# 
-#         #gen_model = AudioVisualGenerator(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM, frozen_weights=True).to(device)
-# 
-#         print("Training...")
-# 
-#         print(curr_embedding[:5, :5])
-#         print(curr_embedding[:5, 305:310])
-# 
-#         curr_embedding.requires_grad = True
-# 
-#         lr = args['lr']
-#         lr = 1e-6
-#         optimizer = optim.SGD([curr_embedding], lr=lr)
-#         # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5)
-# 
-#         N_EPOCHS = args['n_epochs']
-#         #N_EPOCHS = 200
-#         start_time = time.time()
-# 
-#         """
-#         Assumption: the word embedding is already optimized (since derived from MLE).
-#         So we just optimize the audio and visual.
-#         """
-# 
-#         for i in range(N_EPOCHS):
-#             epoch_loss = 0.
-#             iters = 0
-#             #curr_embedding = F.normalize(curr_embedding)
-#             for j, text, aud, vis in dataloader:
-#                 iters += 1
-#                 optimizer.zero_grad()
-#                 # print(curr_embedding[:10])
-# 
-#                 audio, visual = gen_model(curr_embedding[j, 300:320], curr_embedding[j, 320:])
-# 
-#                 if audio[1].min().abs() < 1e-7:
-#                     print("boo!")
-#                 if visual[1].min().abs() < 1e-7:
-#                     print("boot!")
-# 
-#                 # only optimize audio and visual?
-#                 # if optimize word also, seems to blow up
-#                 log_prob = -get_log_prob_matrix(args, curr_embedding[j, :300], audio, visual,
-#                         {"text": text, "covarep": aud, "facet": vis}, word_embeddings, weights, device=device)
-# 
-#                 avg_log_prob = log_prob.mean()
-#                 avg_log_prob.backward(retain_graph=True)
-# 
-#                 # nn.utils.clip_grad_norm_([gen_model.embedding], 500)
-#                 # print(curr_embedding.grad[:5, :5])
-# 
-#                 optimizer.step()
-#                 epoch_loss += avg_log_prob
-#             # scheduler.step()
-# 
-#             if i % valid_niter == 0:
-#                 print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
-#         curr_embedding.requires_grad = False
-# 
-#         print(curr_embedding[:5, :5])
-#         print(curr_embedding[:5, 305:310])
-# 
-#         print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-#         print("Initial sentiment predictions, AFTER optimizing audio and visual")
-#         train_sentiment_for_latents(args, curr_embedding, senti_dataloader, device, verbose=True)
+        # prepare sentiment data
+        train_s, valid_s, test_s = sentiment_data
+
+        senti_train_data = SentimentData(train_s, device)
+        senti_valid_data = SentimentData(valid_s, device)
+        senti_test_data = SentimentData(test_s, device)
+
+        # all_train_data = ConcatDataset([train_dataset, senti_train_data])
+        # all_valid_data = ConcatDataset([valid_dataset, senti_valid_data])
+        # all_test_data = ConcatDataset([test_dataset, senti_test_data])
+
+        # all_train_loader = DataLoader(all_train_data, batch_size=32, shuffle=True)
+        # all_valid_loader = DataLoader(all_valid_data, batch_size=32, shuffle=True)
+        # all_test_loader = DataLoader(all_test_data, batch_size=32, shuffle=True)
+
+        senti_train_loader = DataLoader(senti_train_data, batch_size=32, shuffle=True)
+        senti_valid_loader = DataLoader(senti_valid_data, batch_size=32, shuffle=True)
+        senti_test_loader = DataLoader(senti_test_data, batch_size=32, shuffle=True)
+        
+        for r in range(args['n_runs']):
+            if args['config_name']:
+                config_name = args['config_name']
+            else:
+                config_name = os.path.split(os.path.split(args['config_file'])[0])[1]
+            
+            folder = 'model_saves/{}/config_{}_run_{}'.format(config_name, args['config_num'], r)
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+
+            json.dump(args, open(os.path.join(folder, 'config.json'), 'w'), indent=2)
+            
+            pre_path = os.path.join(folder, 'pre')
+            post_path = os.path.join(folder, 'post')
+
+            if not os.path.isdir(pre_path):
+                os.mkdir(pre_path)
+            if not os.path.isdir(post_path):
+                os.mkdir(post_path)
+
+            torch.save(torch.tensor(combined_embedding.copy(), device=device, dtype=torch.float32),
+                    os.path.join(pre_path, 'embed.bin'))
+
+            # make generative model and sentiment model
+            gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
+                    frozen_weights=args['freeze_weights']).to(device)
+
+            if train['label'].ndim == 1:
+                n_out = 1
+            else:
+                n_out = train['label'].shape[-1]
+
+            senti_model = SentimentModel(EMBEDDING_DIM, args['sentiment_hidden_size'], n_out).to(device)
+
+            # each iteration:
+            # get likelihood and sentiment loss, add (weighted), and minimize
+
+            train_embed = torch.tensor(train_embedding.copy(), device=device, dtype=torch.float32)
+            train_embed.requires_grad = True
+
+            grad_params = [train_embed]
+            grad_params.extend(gen_model.parameters())
+            grad_params.extend(senti_model.parameters())
+
+            lr = args['lr']
+            optimizer = optim.SGD(grad_params, lr=lr)
+            loss_function = nn.L1Loss(reduce=False)
+
+            start_time = time.time()
+            valid_niter = 10
+            train_losses = []
+            all_valid_losses = []
+            N_EPOCHS = args['n_epochs']
+
+            for i in range(N_EPOCHS):
+                epoch_loss = 0.
+                iters = 0
+
+                for x in dataloader:
+                    if args['dataset'] == 'mosi':
+                        j, text, aud, vis, text_m, aud_m, vis_m, text_w = x
+                    else:
+                        j, text, aud, vis, text_m, aud_m, vis_m, text_w, text_a, text_a_m = x
+
+                    _, s_data = senti_train_data[j]
+
+                    iters += 1
+                    optimizer.zero_grad()
+                    out = gen_model(train_embed[j])
+
+                    for modality, d in out.items():
+                        if d['sigma'].min().abs() < 1e-7:
+                            print(d, "boo!")
+
+                    if args['dataset'] == 'mosi':
+                        text_gauss = text
+                        text_gauss_m = text_m
+                    else:
+                        text_gauss = text_a
+                        text_gauss_m = text_a_m
+
+                    batch_data = {
+                        'text': text,
+                        'audio': aud,
+                        'visual': vis,
+                        'text_weights': text_w,
+                        'audiovisual': torch.cat([aud, vis], dim=-1),
+                        'textaudio': torch.cat([text_gauss, aud], dim=-1),
+                        'textvisual': torch.cat([text_gauss, vis], dim=-1),
+                        'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
+                    }
+
+                    batch_masks = {
+                        'text': text_m,
+                        'audio': aud_m,
+                        'visual': vis_m,
+                        'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
+                        'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
+                        'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
+                        'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
+                    }
+
+                    log_prob = -get_log_prob_matrix_trimodal(args, train_embed[j], out,
+                            batch_data, batch_masks, get_word_log_prob2,
+                            device=device, verbose=False)
+
+                    # get sentiment accuracy
+                    senti_predict = senti_model(train_embed[j])
+
+                    senti_loss = loss_function(senti_predict, s_data)
+                    senti_loss = senti_loss.mean(dim=-1)
+
+                    loss = args['likelihood_weight'] * log_prob + (1 - args['likelihood_weight']) * senti_loss
+                    loss.mean().backward()
+                    epoch_loss += float(loss.mean())
+
+                    optimizer.step()
+
+                train_losses.append(epoch_loss)
+                if i % valid_niter == 0:
+                    print("epoch {}: {} ({}s)".format(i, epoch_loss / iters, time.time() - start_time))
+
+                    if i % (valid_niter * 8) == 0:
+                        valid_embed, (valid_losses, _) = optimize_latents(args, False, gen_model, valid_embedding,
+                                valid_dataloader, N_EPOCHS, lr, get_word_log_prob2, device, verbose=False)
+                        print("Validation loss:", valid_losses[-1])
+                        all_valid_losses.append(valid_losses[-1])
+
+            # get test embeddings and evaluate them
+            valid_embed, _ = optimize_latents(args, False, gen_model, valid_embedding,
+                    valid_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
+            test_embed, (test_losses, _) = optimize_latents(args, False, gen_model, test_embedding,
+                    test_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
+
+            with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
+                for loss in train_losses:
+                    f.write('{}\n'.format(loss))
+            with open(os.path.join(folder, 'embed_valid_loss.txt'), 'w') as f:
+                for loss in all_valid_losses:
+                    f.write('{}\n'.format(loss))
+            with open(os.path.join(folder, 'embed_test_loss.txt'), 'w') as f:
+                for loss in test_losses:
+                    f.write('{}\n'.format(loss))
+
+            torch.save(torch.cat([train_embed, valid_embed, test_embed], dim=0),
+                    os.path.join(post_path, 'embed.bin'))
+
+            print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+            print("Initial sentiment predictions, AFTER optimizing audio and visual")
+            latents = (train_embed, valid_embed, test_embed)
+            train_sentiment_for_latents(args, latents, sentiment_data, device,
+                    train_idxes=sentiment_train_idxes,
+                    model_save_path=post_path)
+
+            sys.stdout.flush()
 
     sys.stdout.flush()
 
