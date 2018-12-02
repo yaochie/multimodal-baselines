@@ -13,7 +13,7 @@ def load_data(args):
     elif args['dataset'] == 'pom':
         return load_pom()
     elif args['dataset'] == 'iemocap':
-        return load_iemocap()
+        return load_iemocap(args)
     else:
         raise ValueError
 
@@ -89,7 +89,7 @@ def load_pom():
 
     return word2ix, word_embeddings, (train, valid, test)
 
-def load_iemocap():
+def load_iemocap(args):
     word2ix = json.load(open('iemocap/glove_mappings.iemocap.json', 'r'))
     word_embeddings = np.load('iemocap/glove.iemocap.npy')
     
@@ -98,6 +98,8 @@ def load_iemocap():
     train = {}
     valid = {}
     test = {}
+
+    fname = 'data/iemocap_{}.h5'.format(args['emotion'])
 
     with h5py.File('data/iemocap_happy.h5', 'r') as f:
         print(list(f['train'].keys()))
@@ -115,7 +117,6 @@ def load_iemocap():
 
     print(train['text'].shape)
 
-    # TODO: we want the ids in 'text' instead of the actual embeddings
     # save the seq ids into text_ids
     x = np.load('iemocap/iemocap_train_ids.npy', allow_pickle=False)
     train['text_id'] = x
@@ -125,6 +126,31 @@ def load_iemocap():
     test['text_id'] = x
 
     return word2ix, word_embeddings, (train, valid, test)
+
+def add_positional_embeddings(args, data):
+    """
+    PE(pos, 2i)   = sin(pos/10000^(2i / d_model))
+    PE(pos, 2i+1) = cos(pos/10000^(2i / d_model))
+    """
+
+    seq_len = data.shape[1]
+    n_points = data.shape[0]
+
+    # do simple loop way
+    pos_embed_dim = args['pos_embed_dim']
+
+    idxes = np.arange(seq_len, dtype=np.float32)
+    idxes = np.tile(idxes, [n_points, pos_embed_dim, 1])
+    idxes = np.transpose(idxes, [0, 2, 1])
+
+    for i in range(pos_embed_dim // 2):
+        idxes[2*i,:] = np.sin(idxes[2*i,:] / (10000 ** (2*i / pos_embed_dim)))
+        idxes[2*i+1,:] = np.cos(idxes[2*i+1,:] / (10000 ** (2*i / pos_embed_dim)))
+
+    #print(data.shape)
+    #print(idxes.shape)
+
+    return np.concatenate([data, idxes], axis=-1)
 
 def normalize_data(train):
     """
@@ -145,7 +171,6 @@ def normalize_data(train):
     audio_pad = train['covarep'] == 0
     vis_pad = train['facet'] == 0
     audio_mask = (train['covarep'] != 0).astype(int)
-
     vis_mask = (train['facet'] != 0).astype(int)
 
     audio_min = train['covarep'].min((0, 1))

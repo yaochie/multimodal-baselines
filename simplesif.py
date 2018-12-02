@@ -26,7 +26,7 @@ from losses import get_log_prob_matrix_trimodal, get_word_log_prob_angular2
 from sentiment_model import train_sentiment, train_sentiment_for_latents
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator, AudioVisualGeneratorMultimodal
 from analyze_embeddings import get_closest_words
-from utils import load_data, normalize_data, MMData, MMDataExtra
+from utils import load_data, normalize_data, MMData, MMDataExtra, add_positional_embeddings
 
 from sif import load_weights, get_sentence_embeddings  
 
@@ -170,6 +170,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('dataset', choices=['mosi', 'pom', 'iemocap'])
+    parser.add_argument('--pos_embed_dim', type=int, default=2)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
@@ -178,6 +179,7 @@ def parse_arguments():
     parser.add_argument('--lr_decay', type=float, default=0.5)
     parser.add_argument('--early_stopping', action='store_true')
     parser.add_argument('--sentiment_epochs', type=int)
+    parser.add_argument('--emotion', choices=['happy', 'angry', 'neutral', 'sad'], help='iemocap emotion')
 
     args = vars(parser.parse_args())
     config = read_config(args['config_file'])
@@ -250,6 +252,14 @@ def main():
         train_embedding = get_sentence_embeddings(word_embeddings, weights, train['text'])
         valid_embedding = get_sentence_embeddings(word_embeddings, weights, valid['text'])
         test_embedding = get_sentence_embeddings(word_embeddings, weights, test['text'])
+
+        # add random noise, since we are adding positional embeddings
+        # noise = np.random.randn(train_embedding.shape[0], args['pos_embed_dim'])
+        # train_embedding = np.concatenate([train_embedding, noise], axis=-1)
+        # noise = np.random.randn(valid_embedding.shape[0], args['pos_embed_dim'])
+        # valid_embedding = np.concatenate([valid_embedding, noise], axis=-1)
+        # noise = np.random.randn(test_embedding.shape[0], args['pos_embed_dim'])
+        # test_embedding = np.concatenate([test_embedding, noise], axis=-1)
     else:
         train_embedding = get_sentence_embeddings(word_embeddings, weights, train['text_id'])
         valid_embedding = get_sentence_embeddings(word_embeddings, weights, valid['text_id'])
@@ -262,21 +272,15 @@ def main():
         train['text_id'] = train['text']
         train['text'] = word_embeddings[train['text_id']]
         train['text_weights'] = weights[train['text_id']]
+
         valid['text_id'] = valid['text']
         valid['text'] = word_embeddings[valid['text_id']]
         valid['text_weights'] = weights[valid['text_id']]
+
         test['text_id'] = test['text']
         test['text'] = word_embeddings[test['text_id']]
         test['text_weights'] = weights[test['text_id']]
     else:
-        print(train['text_id'].shape)
-        print(train['text'].shape)
-        print(train['covarep'].shape)
-        print(train['facet'].shape)
-        print('----')
-
-        print(valid['text_id'].shape)
-        print(test['text_id'].shape)
         train['text_align'] = train['text']
         train['text'] = word_embeddings[train['text_id']]
         train['text_weights'] = weights[train['text_id']]
@@ -291,7 +295,66 @@ def main():
         update_masks_vect(valid_mask, valid['text_align'], 'text_align')
         update_masks_vect(test_mask, test['text_align'], 'text_align')
 
-    print(list(train.keys()))
+    # for k, v in train.items():
+    #     print(k, v.shape)
+    # print('--')
+    # for k, v in train_mask.items():
+    #     print(k, v.shape, v.dtype)
+    # print('--')
+
+    # add positional embeddings and update masks
+    if args['dataset'] == 'mosi':
+        #train['text'] = add_positional_embeddings(args, train['text'])
+        train['covarep'] = add_positional_embeddings(args, train['covarep'])
+        train['facet'] = add_positional_embeddings(args, train['facet'])
+
+        #valid['text'] = add_positional_embeddings(args, valid['text'])
+        valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
+        valid['facet'] = add_positional_embeddings(args, valid['facet'])
+
+        #test['text'] = add_positional_embeddings(args, test['text'])
+        test['covarep'] = add_positional_embeddings(args, test['covarep'])
+        test['facet'] = add_positional_embeddings(args, test['facet'])
+        
+        def update_mosi_masks(mask_dict):
+            n_points, seq_len = mask_dict['covarep'].shape[:2]
+            mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
+
+            mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
+            mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
+            #mask_dict['text'] = np.concatenate([mask_dict['text'], mask_extend], axis=-1)
+
+        update_mosi_masks(train_mask)
+        update_mosi_masks(valid_mask)
+        update_mosi_masks(test_mask)
+    else:
+        train['covarep'] = add_positional_embeddings(args, train['covarep'])
+        train['facet'] = add_positional_embeddings(args, train['facet'])
+
+        valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
+        valid['facet'] = add_positional_embeddings(args, valid['facet'])
+
+        test['covarep'] = add_positional_embeddings(args, test['covarep'])
+        test['facet'] = add_positional_embeddings(args, test['facet'])
+        
+        def update_mosi_masks(mask_dict):
+            n_points, seq_len = mask_dict['covarep'].shape[:2]
+            mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
+
+            mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
+            mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
+
+        update_mosi_masks(train_mask)
+        update_mosi_masks(valid_mask)
+        update_mosi_masks(test_mask)
+
+    # print()
+    # for k, v in train.items():
+    #     print(k, v.shape)
+    # print('--')
+    # for k, v in train_mask.items():
+    #     print(k, v.shape, v.dtype)
+    # print('--')
 
     """
     MOSI:
@@ -320,7 +383,7 @@ def main():
 
     # print closest words before training
     if word2ix is not None:
-        pre_closest = get_closest_words(combined_embedding, word_embeddings.cpu().numpy(), word2ix)
+        pre_closest = get_closest_words(combined_embedding[:, :300], word_embeddings.cpu().numpy(), word2ix)
 
     BATCH_SIZE = args['batch_size']
     # dataset = MMData(combined_text, combined_covarep, combined_facet, combined_masks, combined_text_weights, device)
@@ -350,9 +413,11 @@ def main():
         visual features
     """
 
-    EMBEDDING_DIM = word_embeddings.size()[-1]
+    EMBEDDING_DIM = train['text'].shape[-1]
     AUDIO_DIM = train['covarep'].shape[-1]
     VISUAL_DIM = train['facet'].shape[-1]
+
+    print(EMBEDDING_DIM)
 
     """
     3. Maximize log-probability over all modalities
@@ -470,7 +535,8 @@ def main():
                     f.write('{}\n'.format(loss))
 
             if word2ix is not None:
-                post_closest = get_closest_words(train_embed.cpu().numpy(), word_embeddings.cpu().numpy(), word2ix)
+                post_closest = get_closest_words(train_embed[:, :300].cpu().numpy(),
+                        word_embeddings.cpu().numpy(), word2ix)
 
             with open(os.path.join(folder, 'closest_words.txt'), 'w') as f:
                 for pre, post in zip(pre_closest, post_closest):
