@@ -48,7 +48,7 @@ class AudioVisualGeneratorConcat(nn.Module):
         return curr_embedding
 
 class AudioVisualGeneratorMultimodal(nn.Module):
-    def __init__(self, embedding_dim, audio_dim, visual_dim, frozen_weights=True):
+    def __init__(self, embedding_dim, audio_dim, visual_dim, norm=None, frozen_weights=True):
         super(AudioVisualGeneratorMultimodal, self).__init__()
 
         self.embedding = None
@@ -81,6 +81,15 @@ class AudioVisualGeneratorMultimodal(nn.Module):
             }),
         })
 
+        if norm is None:
+            self.norm = None
+        elif norm == 'layer_norm':
+            self.norm = nn.LayerNorm(self.embedding_dim)
+        elif norm == 'batch_norm':
+            self.norm = nn.BatchNorm1d(self.embedding_dim)
+        else:
+            raise NotImplementedError
+
         if frozen_weights:
             self.freeze_weights()
 
@@ -99,7 +108,10 @@ class AudioVisualGeneratorMultimodal(nn.Module):
         self.embedding_dim = self.embedding.size()[-1]
 
     def forward(self, embeddings):
-        to_gen = embeddings
+        if self.norm is not None:
+            to_gen = self.norm(embeddings)
+        else:
+            to_gen = embeddings
 
         # from sentence embedding, generate mean and variance of
         # audio and visual features

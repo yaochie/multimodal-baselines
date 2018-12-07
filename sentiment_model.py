@@ -198,6 +198,7 @@ def train_sentiment_for_latents(args, latents, sentiment_data, device,
     test_data = SentimentData(test, device)
 
     assert train_latents.size()[0] == train.shape[0]
+    print("# of sentiment points:", len(train_data))
 
     train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
     valid_loader = DataLoader(valid_data, batch_size=32, shuffle=True)

@@ -53,7 +53,10 @@ def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epoc
     if train and not args['freeze_weights']:
         grad_params.extend(gen_model.parameters())
 
-    optimizer = optim.SGD(grad_params, lr=lr)
+    if args['optimizer'] == 'sgd':
+        optimizer = optim.SGD(grad_params, lr=lr)
+    elif args['optimizer'] == 'adam':
+        optimizer = optim.Adam(grad_params, lr=lr)
 
     valid_niter = 10
     start_time = time.time()
@@ -185,10 +188,18 @@ def parse_arguments():
     parser.add_argument('--early_stopping', action='store_true')
     parser.add_argument('--sentiment_epochs', type=int)
     parser.add_argument('--emotion', choices=['happy', 'angry', 'neutral', 'sad'], help='iemocap emotion')
-    #parser.add_argument('--likelihood_weight', type=float, default=0.001)
+    parser.add_argument('--optimizer', choices=['sgd', 'adam'], default='sgd')
+    parser.add_argument('--norm', choices=['layer_norm', 'batch_norm'])
+    parser.add_argument('--likelihood_weight', type=float)
     #parser.add_argument('--e2e', action='store_true')
 
     args = vars(parser.parse_args())
+
+    if args['likelihood_weight'] is not None:
+        like_weight = args['likelihood_weight']
+    else:
+        like_weight = None
+
     config = read_config(args['config_file'])
     print('######################################')
     print("Config: {}".format(config['config_num']))
@@ -443,10 +454,19 @@ def main():
 
     sentiment_data = (train['label'], valid['label'], test['label'])
     sentiment_train_idxes = None
+    if args['dataset'] == 'mosi':
+        senti_mask = torch.zeros(n_train, device=device)
+    else:
+        senti_mask = torch.zeros(n_train, 1, device=device)
+
     if args['semi_sup_idxes'] is not None:
-        with h5py.File('subset_idxes.h5', 'r') as f:
+        idxes_file = '{}_subset_idxes.h5'.format(args['dataset'])
+        with h5py.File(idxes_file, 'r') as f:
             sentiment_train_idxes = f[args['semi_sup_idxes']][:]
-            print(sentiment_train_idxes.shape)
+            print("semi-supervised sentiment idxes:", sentiment_train_idxes.shape)
+            senti_mask[sentiment_train_idxes] = 1.
+
+    print(senti_mask.size())
 
     # initialize probability function for word embeddings
     if args['word_sim_metric'] == 'angular':
@@ -522,7 +542,7 @@ def main():
             #        frozen_weights=args['freeze_weights']).to(device)
 
             gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
-                    frozen_weights=args['freeze_weights']).to(device)
+                    norm=args['norm'], frozen_weights=args['freeze_weights']).to(device)
 
             print("Training...")
 
@@ -615,7 +635,7 @@ def main():
 
             # make generative model and sentiment model
             gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
-                    frozen_weights=args['freeze_weights']).to(device)
+                    norm=args['norm'], frozen_weights=args['freeze_weights']).to(device)
 
             if train['label'].ndim == 1:
                 n_out = 1
@@ -635,7 +655,11 @@ def main():
             grad_params.extend(senti_model.parameters())
 
             lr = args['lr']
-            optimizer = optim.SGD(grad_params, lr=lr)
+            if args['optimizer'] == 'sgd':
+                optimizer = optim.SGD(grad_params, lr=lr)
+            elif args['optimizer'] == 'adam':
+                optimizer = optim.Adam(grad_params, lr=lr)
+
             loss_function = nn.L1Loss(reduce=False)
 
             start_time = time.time()
@@ -700,6 +724,11 @@ def main():
                     senti_predict = senti_model(train_embed[j])
 
                     senti_loss = loss_function(senti_predict, s_data)
+                    # zero out the unsup idxes
+                    if sentiment_train_idxes is not None:
+                        mask = senti_mask[j]
+                        senti_loss *= mask
+                        
                     senti_loss = senti_loss.mean(dim=-1)
 
                     loss = args['likelihood_weight'] * log_prob + (1 - args['likelihood_weight']) * senti_loss
@@ -739,6 +768,9 @@ def main():
 
             print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
             print("Initial sentiment predictions, AFTER optimizing audio and visual")
+            train_embed.requires_grad = False
+            valid_embed.requires_grad = False
+            test_embed.requires_grad = False
             latents = (train_embed, valid_embed, test_embed)
             train_sentiment_for_latents(args, latents, sentiment_data, device,
                     train_idxes=sentiment_train_idxes,
