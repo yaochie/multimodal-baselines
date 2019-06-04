@@ -1,9 +1,9 @@
 import sys
 import json
+import pickle
 
 import h5py
 import numpy as np
-import data_loader as loader
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -18,10 +18,10 @@ def load_data(args):
         raise ValueError
 
 def load_mosi():
-    word2ix = loader.load_word2ix()
+    word2ix = pickle.load(open('mosi/word2ix_300_mosi.pkl', 'rb'))
 
     # load glove 300d word embeddings
-    word_embeddings = loader.load_word_embedding()
+    word_embeddings = np.load('mosi/glove_300_mosi.npy', allow_pickle=False)
     
     # saved train, valid, test in file so that don't have to
     # regenerate each time
