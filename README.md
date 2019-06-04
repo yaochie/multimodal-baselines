@@ -12,11 +12,16 @@ Processed data for the MOSI and POM datasets used in the code can be obtained fr
 
 `configs/` contains JSON files that holds the hyperparameters of the model. To generate some config files, run `python configs/make_configs.py`. These will be saved in `configs/multimodal_search`.
 
-Then,
+Then, to run MMB2,
 ```
 python simplesif.py configs/multimodal_search/config_0.json $DATASET
 ```
 where `$DATASET` is `mosi` or `pom`.
+
+For MMB1, set the `--unimodal` flag:
+```
+python simplesif.py configs/multimodal_search/config_0.json $DATASET --unimodal
+```
 
 Run `python simplesif.py --help` for more options`.
 
