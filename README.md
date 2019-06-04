@@ -1,14 +1,17 @@
-# Multimodal generative representations
+An implementation of baselines for multimodal utterance embedding, as described in [https://www.aclweb.org/anthology/N19-1267]
 
-Implement baselines for multimodal generative representations.
+Based on (original SIF implementation)[https://github.com/PrincetonML/SIF] by Arora et al. (2016, 2017).
 
-Currently uses Arora et al's baseline representations for sentences,
-and updates them further to represent audio-visual features.
+Requires Python 3.
 
-Currently only loads MOSI data.
+# Data
+
+Processed data for the MOSI and POM datasets used in the code can be obtained from (here)[https://drive.google.com/drive/folders/1JhCxsNgYB1brG6-e7mNJhMR8fmOCtq_6?usp=sharing]. Alternatively, you can get the raw data (here)[https://github.com/A2Zadeh/CMU-MultimodalSDK].
 
 # Instructions
+
 To run: `python simplesif.py`
 
-Currently requires (Arora et al's SIF implementation)[https://github.com/PrincetonML/SIF].
-Currently requires Python 2 (because of the SIF implementation)
+# License
+
+This code is released under the MIT License. See LICENSE for more details.
