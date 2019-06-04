@@ -7,7 +7,7 @@ import random
 #folder = 'frozen_weights'
 #name = 'frozen_weights'
 dir_path = os.path.dirname(os.path.realpath(__file__))
-folder = name = 'multimodal_search2'
+folder = name = 'multimodal_search'
 folder = os.path.join(dir_path, folder)
 
 if not os.path.isdir(folder):
