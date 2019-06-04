@@ -28,6 +28,37 @@ def load_word_embedding():
     #     return cPickle.load(f)
     return np.load('glove_300_mosi.npy', allow_pickle=False)
 
+def load_all_glove():
+    # fname = "/media/bighdd5/Paul/mosi/glove_word_embedding/glove.840B.300d.txt"
+
+    # print("loading glove from {}".format(fname))
+
+    # vects = []
+    # words = []
+
+    # with open(fname, 'r') as f:
+    #     for line in f:
+    #         stuff = line.strip().split()
+    #         words.append(stuff[0])
+    #         vects.append(stuff[1:])
+
+    # vects = np.array(vects)
+
+    # f = h5py.File('glove_300d.h5', 'w')
+    # f.create_dataset('embeddings', data=vects)
+    # f.create_dataset('words', data=words)
+    # f.close()
+
+    #############
+
+    # with h5py.File('glove_300d.h5', 'r') as f:
+    #     vects = f['embeddings'][:]
+    #     words = f['words'][:]
+
+    # return vects
+    return np.load('glove_300_mosi.npy', allow_pickle=False)
+
+
 '''
 def load_word_embedding(word2ix, embedding_vecor_length):
     word_embedding_path = word_embedding_path_prefix + str(embedding_vecor_length) + "d.txt"

@@ -106,7 +106,7 @@ def train_sentiment(args, model, train_data, train_latents,
             loss = loss_function(senti_predict, senti)
             epoch_loss += loss.mean()
 
-            loss.mean().backward()
+            loss.mean().backward(retain_graph=True)
             optimizer.step()
         
         avg_epoch_loss = epoch_loss / n_batches

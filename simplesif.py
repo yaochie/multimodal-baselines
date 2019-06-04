@@ -30,6 +30,7 @@ from analyze_embeddings import get_closest_words
 from utils import load_data, normalize_data, MMData, MMDataExtra, add_positional_embeddings
 
 from sif import load_weights, get_sentence_embeddings  
+from sif2 import estimate_embedding_overall, estimate_embedding_overall_gpu, estimate_embedding_overall_gpu2
 
 def update_masks(mask_dict, data, embedding_dim):
     tmp = (data != 0).astype(int)
@@ -178,7 +179,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file')
     parser.add_argument('dataset', choices=['mosi', 'pom', 'iemocap'])
-    #parser.add_argument('--pos_embed_dim', type=int, default=2)
+    parser.add_argument('--pos_embed_dim', type=int)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
@@ -191,9 +192,17 @@ def parse_arguments():
     parser.add_argument('--optimizer', choices=['sgd', 'adam'], default='sgd')
     parser.add_argument('--norm', choices=['layer_norm', 'batch_norm'])
     parser.add_argument('--likelihood_weight', type=float)
-    #parser.add_argument('--e2e', action='store_true')
+    parser.add_argument('--e2e', choices=['y', 'n'])
+    parser.add_argument('--time_test', action='store_true')
 
     args = vars(parser.parse_args())
+
+    override_dict = {}
+
+    if args['pos_embed_dim'] is not None:
+        override_dict['pos_embed_dim'] = args['pos_embed_dim']
+    if args['e2e'] is not None:
+        override_dict['e2e'] = args['e2e']
 
     if args['likelihood_weight'] is not None:
         like_weight = args['likelihood_weight']
@@ -204,6 +213,12 @@ def parse_arguments():
     print('######################################')
     print("Config: {}".format(config['config_num']))
     args.update(config)
+
+    args.update(override_dict)
+    if args['e2e'] == 'y':
+        args['e2e'] = True
+    elif args['e2e'] == 'n':
+        args['e2e'] = False
 
     if args['sentiment_epochs']:
         args['n_sentiment_epochs'] = args['sentiment_epochs']
@@ -321,50 +336,54 @@ def main():
     # print('--')
 
     # add positional embeddings and update masks
-    if args['dataset'] == 'mosi':
-        #train['text'] = add_positional_embeddings(args, train['text'])
-        train['covarep'] = add_positional_embeddings(args, train['covarep'])
-        train['facet'] = add_positional_embeddings(args, train['facet'])
+    print("# pos embeddings:", args['pos_embed_dim'])
+    if 'pos_embed_dim' in args and args['pos_embed_dim'] > 0:
+        if args['dataset'] == 'mosi':
+            #train['text'] = add_positional_embeddings(args, train['text'])
+            train['covarep'] = add_positional_embeddings(args, train['covarep'])
+            train['facet'] = add_positional_embeddings(args, train['facet'])
 
-        #valid['text'] = add_positional_embeddings(args, valid['text'])
-        valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
-        valid['facet'] = add_positional_embeddings(args, valid['facet'])
+            #valid['text'] = add_positional_embeddings(args, valid['text'])
+            valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
+            valid['facet'] = add_positional_embeddings(args, valid['facet'])
 
-        #test['text'] = add_positional_embeddings(args, test['text'])
-        test['covarep'] = add_positional_embeddings(args, test['covarep'])
-        test['facet'] = add_positional_embeddings(args, test['facet'])
-        
-        def update_mosi_masks(mask_dict):
-            n_points, seq_len = mask_dict['covarep'].shape[:2]
-            mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
+            #test['text'] = add_positional_embeddings(args, test['text'])
+            test['covarep'] = add_positional_embeddings(args, test['covarep'])
+            test['facet'] = add_positional_embeddings(args, test['facet'])
+            
+            def update_mosi_masks(mask_dict):
+                n_points, seq_len = mask_dict['covarep'].shape[:2]
+                mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
 
-            mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
-            mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
-            #mask_dict['text'] = np.concatenate([mask_dict['text'], mask_extend], axis=-1)
+                mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
+                mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
+                #mask_dict['text'] = np.concatenate([mask_dict['text'], mask_extend], axis=-1)
 
-        update_mosi_masks(train_mask)
-        update_mosi_masks(valid_mask)
-        update_mosi_masks(test_mask)
+            update_mosi_masks(train_mask)
+            update_mosi_masks(valid_mask)
+            update_mosi_masks(test_mask)
+        else:
+            train['covarep'] = add_positional_embeddings(args, train['covarep'])
+            train['facet'] = add_positional_embeddings(args, train['facet'])
+
+            valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
+            valid['facet'] = add_positional_embeddings(args, valid['facet'])
+
+            test['covarep'] = add_positional_embeddings(args, test['covarep'])
+            test['facet'] = add_positional_embeddings(args, test['facet'])
+            
+            def update_mosi_masks(mask_dict):
+                n_points, seq_len = mask_dict['covarep'].shape[:2]
+                mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
+
+                mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
+                mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
+
+            update_mosi_masks(train_mask)
+            update_mosi_masks(valid_mask)
+            update_mosi_masks(test_mask)
     else:
-        train['covarep'] = add_positional_embeddings(args, train['covarep'])
-        train['facet'] = add_positional_embeddings(args, train['facet'])
-
-        valid['covarep'] = add_positional_embeddings(args, valid['covarep'])
-        valid['facet'] = add_positional_embeddings(args, valid['facet'])
-
-        test['covarep'] = add_positional_embeddings(args, test['covarep'])
-        test['facet'] = add_positional_embeddings(args, test['facet'])
-        
-        def update_mosi_masks(mask_dict):
-            n_points, seq_len = mask_dict['covarep'].shape[:2]
-            mask_extend = np.ones((n_points, seq_len, args['pos_embed_dim']), dtype=np.int64)
-
-            mask_dict['covarep'] = np.concatenate([mask_dict['covarep'], mask_extend], axis=-1)
-            mask_dict['facet'] = np.concatenate([mask_dict['facet'], mask_extend], axis=-1)
-
-        update_mosi_masks(train_mask)
-        update_mosi_masks(valid_mask)
-        update_mosi_masks(test_mask)
+        print("not adding positional embeddings!")
 
     # print()
     # for k, v in train.items():
@@ -544,7 +563,7 @@ def main():
             gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
                     norm=args['norm'], frozen_weights=args['freeze_weights']).to(device)
 
-            print("Training...")
+            print("Training one at a time...")
 
             lr = args['lr']
 
@@ -561,13 +580,13 @@ def main():
                 for loss in valid_losses:
                     f.write('{}\n'.format(loss))
 
-            if word2ix is not None:
-                post_closest = get_closest_words(train_embed[:, :300].cpu().numpy(),
-                        word_embeddings.cpu().numpy(), word2ix)
+            # if word2ix is not None:
+            #     post_closest = get_closest_words(train_embed[:, :300].cpu().numpy(),
+            #             word_embeddings.cpu().numpy(), word2ix)
 
-            with open(os.path.join(folder, 'closest_words.txt'), 'w') as f:
-                for pre, post in zip(pre_closest, post_closest):
-                    f.write('{}\t{}\n'.format(' '.join(pre), ' '.join(post)))
+            # with open(os.path.join(folder, 'closest_words.txt'), 'w') as f:
+            #     for pre, post in zip(pre_closest, post_closest):
+            #         f.write('{}\t{}\n'.format(' '.join(pre), ' '.join(post)))
 
             valid_embed, _ = optimize_latents(args, False, gen_model, valid_embedding,
                     valid_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
@@ -667,6 +686,7 @@ def main():
             train_losses = []
             all_valid_losses = []
             N_EPOCHS = args['n_epochs']
+            #N_EPOCHS = 10
 
             for i in range(N_EPOCHS):
                 epoch_loss = 0.
@@ -752,6 +772,89 @@ def main():
                     valid_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
             test_embed, (test_losses, _) = optimize_latents(args, False, gen_model, test_embedding,
                     test_dataloader, N_EPOCHS, lr, get_word_log_prob2, device)
+
+            if args['time_test']:
+                # obtain test embeddings in closed form, get time taken
+                # test_data = (test['text_id'], test['covarep'], test['facet'])
+                # test_data = (
+                #     torch.as_tensor(test['text_id'], dtype=torch.long, device=device),
+                #     torch.as_tensor(test['covarep'], dtype=torch.float, device=device),
+                #     torch.as_tensor(test['facet'], dtype=torch.float, device=device)
+                # )
+
+                print(list(test.keys()))
+                print(list(test_mask.keys()))
+
+                test_data = {
+                    'text': torch.as_tensor(test['text'], dtype=torch.float, device=device),
+                    'audio': torch.as_tensor(test['covarep'], dtype=torch.float, device=device),
+                    'visual': torch.as_tensor(test['facet'], dtype=torch.float, device=device),
+                }
+                test_data.update({
+                    'audiovisual': torch.cat([test_data['audio'], test_data['visual']], dim=-1),
+                    'textaudio': torch.cat([test_data['text'], test_data['audio']], dim=-1),
+                    'textvisual': torch.cat([test_data['text'], test_data['visual']], dim=-1),
+                    'textaudiovisual': torch.cat([test_data['text'], test_data['audio'], test_data['visual']], dim=-1),
+                })
+
+                test_masks = {
+                    'text': torch.as_tensor(test_mask['text'], dtype=torch.float, device=device),
+                    'audio': torch.as_tensor(test_mask['covarep'], dtype=torch.float, device=device),
+                    'visual': torch.as_tensor(test_mask['facet'], dtype=torch.float, device=device),
+                }
+                test_masks.update({
+                    'audiovisual': torch.cat([test_masks['audio'], test_masks['visual']], dim=-1),
+                    'textaudio': torch.cat([test_masks['text'], test_masks['audio']], dim=-1),
+                    'textvisual': torch.cat([test_masks['text'], test_masks['visual']], dim=-1),
+                    'textaudiovisual': torch.cat([test_masks['text'], test_masks['audio'], test_masks['visual']], dim=-1),
+                })
+
+                keys = [
+                    'audio',
+                    'visual',
+                    'audiovisual',
+                    'textaudio',
+                    'textvisual',
+                    'textaudiovisual',
+                ]
+
+                networks = {
+                    k: (gen_model.embed2out[k]['mu'], gen_model.embed2out[k]['log_sigma'])
+                    for k in keys
+                }
+
+                # audio_network = (gen_model.embed2out['audio']['mu'], gen_model.embed2out['audio']['log_sigma'])
+                # visual_network = (gen_model.embed2out['visual']['mu'], gen_model.embed2out['visual']['log_sigma'])
+
+                # get weights of text data
+                text_tmp = torch.as_tensor(test['text_id'], dtype=torch.long, device=device)
+                sentence_weights = torch.zeros_like(text_tmp, dtype=torch.float, device=device)
+                mask = torch.ones_like(text_tmp)
+                selection_arr = (mask > 0) & (text_tmp >= 0)
+
+                for i in range(text_tmp.size()[0]):
+                    sentence_weights[i] = torch.gather(weights, 0, text_tmp[i])
+                sentence_weights = sentence_weights * selection_arr.type(torch.float)
+
+                embeddings = word_embeddings[text_tmp,:]
+
+                start_time = time.time()
+                with torch.no_grad():
+                    latents = estimate_embedding_overall_gpu2(test_data, test_masks, networks, sentence_weights, embeddings)
+                    #latents = estimate_embedding_overall_gpu(test_data, test_mask, audio_network, visual_network,
+                    #    sentence_weights, embeddings)
+                end_time = time.time()
+
+                print("time taken:", end_time - start_time)
+
+                print("#############################################")
+                print(test.keys())
+                print(test_mask.keys())
+
+                print(train_embed.size())
+                print(valid_embed.size())
+                print(test_embed.size())
+                sys.exit()
 
             with open(os.path.join(folder, 'embed_loss.txt'), 'w') as f:
                 for loss in train_losses:

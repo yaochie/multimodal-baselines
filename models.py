@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class AudioVisualGeneratorConcat(nn.Module):
     def __init__(self, audio_embedding_dim, visual_embedding_dim,
@@ -46,6 +47,62 @@ class AudioVisualGeneratorConcat(nn.Module):
         curr_embedding = torch.cat([word_embeddings, aud_embedding, vis_embedding], dim=1)
 
         return curr_embedding
+
+class Autoencoder(nn.Module):
+    def __init__(self, latent_dim, hidden_dim, embedding_dim, audio_dim, visual_dim, norm=None):
+        super(Autoencoder, self).__init__()
+
+        output_dim = embedding_dim + audio_dim + visual_dim
+
+        self.encoder = nn.Linear(output_dim, hidden_dim)
+        self.encoder2 = nn.Linear(hidden_dim, latent_dim)
+
+        self.decoder = nn.Linear(latent_dim, hidden_dim)
+        self.decoder2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, inputs, device=None):
+        latent = F.relu(self.encoder(inputs))
+        latent = self.encoder2(latent)
+
+        out = F.relu(self.decoder(latent))
+        out = self.decoder2(out)
+
+        return latent, out
+
+class LSTMAutoencoder(nn.Module):
+    def __init__(self, latent_dim, embedding_dim, audio_dim, visual_dim):
+        super(LSTMAutoencoder, self).__init__()
+
+        output_dim = embedding_dim + audio_dim + visual_dim
+
+        self.encoder = nn.LSTM(output_dim, latent_dim)
+        self.decoder = nn.LSTM(output_dim, latent_dim)
+
+        self.pred_layer = nn.Linear(latent_dim, output_dim)
+
+    def forward(self, inputs, device=torch.device('cpu')):
+        inputs = inputs.permute(1, 0, 2)
+
+        seq_len = inputs.size()[0]
+        _, encoder_state = self.encoder(inputs)
+
+        latents, _ = encoder_state
+
+        x = torch.zeros(1, inputs.size()[1], inputs.size()[2], device=device)
+        #x = inputs[-1]
+        #x = torch.zeros(1, inputs.size()[1], inputs.size()[2], device=self.device)
+        decoder_state = encoder_state
+        seq = []
+        for i in range(seq_len):
+            out, decoder_state = self.decoder(x, decoder_state)
+            x = inputs[i:i+1]
+    
+            seq.append(self.pred_layer(out))
+
+        seq = torch.cat(seq, dim=0)
+        seq = seq.permute(1, 0, 2)
+
+        return latents, seq
 
 class AudioVisualGeneratorMultimodal(nn.Module):
     def __init__(self, embedding_dim, audio_dim, visual_dim, norm=None, frozen_weights=True):
