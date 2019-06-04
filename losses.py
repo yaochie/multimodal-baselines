@@ -150,7 +150,7 @@ def get_word_log_prob_dot_prod2(latents, word_embeddings, word_weights, sent_emb
     word_log_prob = log_probs.sum(dim=-1)
     return word_log_prob
 
-def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob_fn,
+def get_log_prob_matrix_old(args, latents, audio, visual, data, masks, word_log_prob_fn,
         device=torch.device('cpu'), verbose=False):
     """
     Return the log probability for the batch data given the
@@ -168,12 +168,8 @@ def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob
         masks: a binary tensor indicating whether the loss for this value
             should be masked (because it is padding)
     """
-    epsilon = torch.tensor(1e-6, device=device)
-
     (audio_mu, audio_sigma) = audio
     (visual_mu, visual_sigma) = visual
-    #audio_sigma = audio_sigma + epsilon
-    #visual_sigma = visual_sigma + epsilon
 
     word_log_prob = word_log_prob_fn(latents, data['text'], masks['text'])
 
@@ -207,10 +203,6 @@ def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob
         print("Visual: {}\tAudio: {}\tWord: {}".format(visual_log_prob.min(),
             audio_log_prob.min(), word_log_prob.min()))
 
-        # print("Visual: {}".format(visual_log_prob.min()))
-        # print("Audio: {}".format(audio_log_prob.min()))
-        # print("Word: {}".format(word_log_prob.min()))
-
     # final output: one value per datapoint
     if 'word_loss_weight' in args:
         word_weight = args['word_loss_weight']
@@ -221,7 +213,7 @@ def get_log_prob_matrix(args, latents, audio, visual, data, masks, word_log_prob
     # total_log_prob = audio_log_prob + visual_log_prob
     return total_log_prob
 
-def get_log_prob_matrix_trimodal(args, latents, out, data, masks, word_log_prob_fn,
+def get_log_prob_matrix(args, latents, out, data, masks, word_log_prob_fn,
         device=torch.device('cpu'), verbose=False):
     """
     Return the log probability for the batch data given the
@@ -270,10 +262,6 @@ def get_log_prob_matrix_trimodal(args, latents, out, data, masks, word_log_prob_
             bad = True
     if bad:
         sys.exit()
-
-    if verbose:
-        print("Visual: {}\tAudio: {}\tWord: {}".format(visual_log_prob.min(),
-            audio_log_prob.min(), word_log_prob.min()))
 
     # final output: one value per datapoint
     if 'word_loss_weight' in args:

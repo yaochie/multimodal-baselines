@@ -105,38 +105,58 @@ class LSTMAutoencoder(nn.Module):
         return latents, seq
 
 class AudioVisualGeneratorMultimodal(nn.Module):
-    def __init__(self, embedding_dim, audio_dim, visual_dim, norm=None, frozen_weights=True):
+    def __init__(self, embedding_dim, audio_dim, visual_dim, norm=None, frozen_weights=True,
+                unimodal=False):
         super(AudioVisualGeneratorMultimodal, self).__init__()
 
         self.embedding = None
         self.embedding_dim = embedding_dim
 
-        self.embed2out = nn.ModuleDict({
-            'audio': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, audio_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, audio_dim)
-            }),
-            'visual': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, visual_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, visual_dim)
-            }),
-            'audiovisual': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, audio_dim + visual_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, audio_dim + visual_dim)
-            }),
-            'textaudio': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, embedding_dim + audio_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + audio_dim)
-            }),
-            'textvisual': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, embedding_dim + visual_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + visual_dim)
-            }),
-            'textaudiovisual': nn.ModuleDict({
-                'mu': nn.Linear(self.embedding_dim, embedding_dim + audio_dim + visual_dim),
-                'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + audio_dim + visual_dim)
-            }),
-        })
+        if unimodal:
+            print("===========================================")
+            print("Building MMB1 (unimodal factorization only)")
+            print("===========================================")
+            self.embed2out = nn.ModuleDict({
+                'audio': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, audio_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, audio_dim)
+                }),
+                'visual': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, visual_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, visual_dim)
+                }),
+            })
+
+        else:
+            print("===========================================")
+            print("Building MMB2 (uni+bi+trimodal)")
+            print("===========================================")
+            self.embed2out = nn.ModuleDict({
+                'audio': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, audio_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, audio_dim)
+                }),
+                'visual': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, visual_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, visual_dim)
+                }),
+                'audiovisual': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, audio_dim + visual_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, audio_dim + visual_dim)
+                }),
+                'textaudio': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, embedding_dim + audio_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + audio_dim)
+                }),
+                'textvisual': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, embedding_dim + visual_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + visual_dim)
+                }),
+                'textaudiovisual': nn.ModuleDict({
+                    'mu': nn.Linear(self.embedding_dim, embedding_dim + audio_dim + visual_dim),
+                    'log_sigma': nn.Linear(self.embedding_dim, embedding_dim + audio_dim + visual_dim)
+                }),
+            })
 
         if norm is None:
             self.norm = None

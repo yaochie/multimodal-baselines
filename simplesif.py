@@ -22,7 +22,8 @@ import numpy as np
 import h5py
 
 from losses import get_log_prob_matrix, get_word_log_prob_angular, get_word_log_prob_dot_prod
-from losses import get_log_prob_matrix_trimodal, get_word_log_prob_angular2
+# from losses import get_log_prob_matrix_trimodal, get_word_log_prob_angular2
+from losses import get_word_log_prob_angular2
 from sentiment_model import train_sentiment, train_sentiment_for_latents, SentimentData
 from sentiment_model import SentimentModel
 from models import AudioVisualGeneratorConcat, AudioVisualGenerator, AudioVisualGeneratorMultimodal
@@ -89,38 +90,45 @@ def optimize_latents(args, train: bool, gen_model, embed_arr, dataloader, n_epoc
                 text_gauss = text_a
                 text_gauss_m = text_a_m
 
-            batch_data = {
-                'text': text,
-                'audio': aud,
-                'visual': vis,
-                'text_weights': text_w,
-                'audiovisual': torch.cat([aud, vis], dim=-1),
-                'textaudio': torch.cat([text_gauss, aud], dim=-1),
-                'textvisual': torch.cat([text_gauss, vis], dim=-1),
-                'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
-            }
+            if not args['unimodal']:
+                batch_data = {
+                    'text': text,
+                    'audio': aud,
+                    'visual': vis,
+                    'text_weights': text_w,
+                    'audiovisual': torch.cat([aud, vis], dim=-1),
+                    'textaudio': torch.cat([text_gauss, aud], dim=-1),
+                    'textvisual': torch.cat([text_gauss, vis], dim=-1),
+                    'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
+                }
 
-            batch_masks = {
-                'text': text_m,
-                'audio': aud_m,
-                'visual': vis_m,
-                'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
-                'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
-                'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
-                'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
-            }
+                batch_masks = {
+                    'text': text_m,
+                    'audio': aud_m,
+                    'visual': vis_m,
+                    'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
+                    'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
+                    'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
+                    'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
+                }
 
-            # TODO: check that mask and data are same size
+            else:
+                batch_data = {
+                    'text': text,
+                    'audio': aud,
+                    'visual': vis,
+                    'text_weights': text_w,
+                }
 
-            log_prob = -get_log_prob_matrix_trimodal(args, embeddings[j], out,
+                batch_masks = {
+                    'text': text_m,
+                    'audio': aud_m,
+                    'visual': vis_m,
+                }
+
+            log_prob = -get_log_prob_matrix(args, embeddings[j], out,
                     batch_data, batch_masks, word_prob_fn,
                     device=device, verbose=False)
-
-            # log_prob = -get_log_prob_matrix(args, curr_embedding[j], audio, visual,
-            #         {"text": text, "covarep": aud, "facet": vis}, 
-            #         {"text": text_m, "covarep": aud_m, "facet": vis_m},
-            #         get_word_log_prob,
-            #         device=device, verbose=False)
 
             avg_log_prob = log_prob.mean()
             avg_log_prob.backward()
@@ -177,23 +185,27 @@ def read_config(config_file):
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('config_file')
+    parser.add_argument('config_file', help='JSON file containing hyperparameters for model')
     parser.add_argument('dataset', choices=['mosi', 'pom', 'iemocap'])
+    parser.add_argument('--unimodal', action='store_true', help='run mmb1 (unimodal factorization)')
     parser.add_argument('--pos_embed_dim', type=int)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--semi_sup_idxes', choices=['{:.1f}'.format(x) for x in np.arange(0.1, 1, 0.1)])
     parser.add_argument('--config_name', help='override config name in config file')
-    parser.add_argument('--cuda_device', type=int, choices=list(range(4)))
     parser.add_argument('--lr_decay', type=float, default=0.5)
-    parser.add_argument('--early_stopping', action='store_true')
+    parser.add_argument('--early_stopping', action='store_true',
+                        help='early stopping when training sentiment model')
     parser.add_argument('--sentiment_epochs', type=int)
     parser.add_argument('--emotion', choices=['happy', 'angry', 'neutral', 'sad'], help='iemocap emotion')
     parser.add_argument('--optimizer', choices=['sgd', 'adam'], default='sgd')
     parser.add_argument('--norm', choices=['layer_norm', 'batch_norm'])
     parser.add_argument('--likelihood_weight', type=float)
-    parser.add_argument('--e2e', choices=['y', 'n'])
-    parser.add_argument('--time_test', action='store_true')
+    parser.add_argument('--e2e', choices=['y', 'n'], help='end-to-end training of latent variables')
+    parser.add_argument('--time_test', action='store_true', help='Run inference timing')
+
+    parser.add_argument('--cuda_device', type=int, choices=list(range(4)), help='set CUDA device number')
+    parser.add_argument('--cuda', action='store_true')
 
     args = vars(parser.parse_args())
 
@@ -231,7 +243,10 @@ def main():
     if args['cuda_device']:
         os.environ['CUDA_VISIBLE_DEVICES'] = str(args['cuda_device'])
 
-    device = torch.device('cuda')
+    if args['cuda']:
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
 
     """
     Procedure:
@@ -274,11 +289,8 @@ def main():
     n_test = test['label'].shape[0]
 
     weights = load_weights(args)
-    weights = torch.tensor(weights, device=device, dtype=torch.float32)
-    word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
-
     if args['word_sim_metric'] == 'dot_prod':
-        word_embeddings = F.normalize(word_embeddings)
+        word_embeddings = word_embeddings / np.linalg.norm(word_embeddings, axis=-1, keepdims=True)
 
     # get sentence embeddings
     if args['dataset'] == 'mosi':
@@ -299,6 +311,9 @@ def main():
         test_embedding = get_sentence_embeddings(word_embeddings, weights, test['text_id'])
 
     combined_embedding = np.concatenate([train_embedding, valid_embedding, test_embedding], axis=0)
+
+    weights = torch.tensor(weights, device=device, dtype=torch.float32)
+    word_embeddings = torch.tensor(word_embeddings, device=device, dtype=torch.float32)
 
     # we don't need the id's any more, so convert the ids into the corresponding embeddings
     if args['dataset'] == 'mosi':
@@ -561,7 +576,8 @@ def main():
             #        frozen_weights=args['freeze_weights']).to(device)
 
             gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
-                    norm=args['norm'], frozen_weights=args['freeze_weights']).to(device)
+                    norm=args['norm'], frozen_weights=args['freeze_weights'],
+                    unimodal=args['unimodal']).to(device)
 
             print("Training one at a time...")
 
@@ -654,7 +670,8 @@ def main():
 
             # make generative model and sentiment model
             gen_model = AudioVisualGeneratorMultimodal(EMBEDDING_DIM, AUDIO_DIM, VISUAL_DIM,
-                    norm=args['norm'], frozen_weights=args['freeze_weights']).to(device)
+                    norm=args['norm'], frozen_weights=args['freeze_weights'],
+                    unimodal=args['unimodal']).to(device)
 
             if train['label'].ndim == 1:
                 n_out = 1
@@ -715,28 +732,43 @@ def main():
                         text_gauss = text_a
                         text_gauss_m = text_a_m
 
-                    batch_data = {
-                        'text': text,
-                        'audio': aud,
-                        'visual': vis,
-                        'text_weights': text_w,
-                        'audiovisual': torch.cat([aud, vis], dim=-1),
-                        'textaudio': torch.cat([text_gauss, aud], dim=-1),
-                        'textvisual': torch.cat([text_gauss, vis], dim=-1),
-                        'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
-                    }
+                    if not args['unimodal']:
+                        batch_data = {
+                            'text': text,
+                            'audio': aud,
+                            'visual': vis,
+                            'text_weights': text_w,
+                            'audiovisual': torch.cat([aud, vis], dim=-1),
+                            'textaudio': torch.cat([text_gauss, aud], dim=-1),
+                            'textvisual': torch.cat([text_gauss, vis], dim=-1),
+                            'textaudiovisual': torch.cat([text_gauss, aud, vis], dim=-1),
+                        }
 
-                    batch_masks = {
-                        'text': text_m,
-                        'audio': aud_m,
-                        'visual': vis_m,
-                        'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
-                        'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
-                        'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
-                        'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
-                    }
+                        batch_masks = {
+                            'text': text_m,
+                            'audio': aud_m,
+                            'visual': vis_m,
+                            'audiovisual': torch.cat([aud_m, vis_m], dim=-1),
+                            'textaudio': torch.cat([text_gauss_m, aud_m], dim=-1),
+                            'textvisual': torch.cat([text_gauss_m, vis_m], dim=-1),
+                            'textaudiovisual': torch.cat([text_gauss_m, aud_m, vis_m], dim=-1),
+                        }
 
-                    log_prob = -get_log_prob_matrix_trimodal(args, train_embed[j], out,
+                    else:
+                        batch_data = {
+                            'text': text,
+                            'audio': aud,
+                            'visual': vis,
+                            'text_weights': text_w,
+                        }
+
+                        batch_masks = {
+                            'text': text_m,
+                            'audio': aud_m,
+                            'visual': vis_m,
+                        }
+
+                    log_prob = -get_log_prob_matrix(args, train_embed[j], out,
                             batch_data, batch_masks, get_word_log_prob2,
                             device=device, verbose=False)
 
